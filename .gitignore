@@ -1,0 +1,26 @@
+# Unreal build products
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+# Local verification and packages
+.build/
+Artifacts/
+
+# IDE and generated project files
+.vs/
+.idea/
+.vscode/
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+
+# Platform noise
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc

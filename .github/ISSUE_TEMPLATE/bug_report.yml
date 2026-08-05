@@ -1,0 +1,52 @@
+name: Bug report
+description: Report a reproducible import, layout, render, cook, or runtime defect.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not attach fonts or atlases you are not allowed to redistribute.
+  - type: input
+    id: engine
+    attributes:
+      label: Unreal Engine version
+      placeholder: 5.8 source build, CL if known
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Host and target platform
+      placeholder: Windows 11 / Win64 Shipping
+    validations:
+      required: true
+  - type: dropdown
+    id: format
+    attributes:
+      label: Descriptor format
+      options:
+        - Text
+        - XML
+        - Binary v3
+        - Unknown
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include exact steps and the smallest redistributable fixture or descriptor excerpt.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Include LogUnrealBMFont and Automation output; remove private paths if needed.
+      render: text

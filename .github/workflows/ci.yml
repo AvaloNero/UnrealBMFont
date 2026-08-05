@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Metadata and repository checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate repository
+        run: python Scripts/ValidateRepository.py
+
+  unreal:
+    name: UE 5.8 / Win64
+    if: ${{ vars.UE_CI_ENABLED == 'true' }}
+    runs-on: [self-hosted, windows, x64, ue-5.8]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require configured engine root
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace('${{ vars.UE_ROOT }}')) {
+            throw 'Set the repository variable UE_ROOT to the Unreal Engine 5.8 root on this runner.'
+          }
+      - name: Build plugin
+        shell: pwsh
+        run: >-
+          ./Scripts/BuildPlugin.ps1
+          -EngineRoot '${{ vars.UE_ROOT }}'
+          -OutputDirectory '${{ runner.temp }}\UnrealBMFont-Package'
+          -TargetPlatforms Win64
+      - name: Create automation host
+        shell: pwsh
+        run: |
+          $hostRoot = '${{ runner.temp }}\UnrealBMFont-Host'
+          if (Test-Path -LiteralPath $hostRoot) {
+            throw "Automation host already exists; refusing stale state: $hostRoot"
+          }
+          New-Item -ItemType Directory -Path "$hostRoot\Plugins" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$hostRoot\Content" -Force | Out-Null
+          Copy-Item -LiteralPath '${{ runner.temp }}\UnrealBMFont-Package' -Destination "$hostRoot\Plugins\UnrealBMFont" -Recurse
+          @'
+          {
+            "FileVersion": 3,
+            "EngineAssociation": "5.8",
+            "Plugins": [
+              { "Name": "UnrealBMFont", "Enabled": true }
+            ]
+          }
+          '@ | Set-Content -LiteralPath "$hostRoot\UnrealBMFontHost.uproject" -Encoding utf8
+      - name: Run automation
+        shell: pwsh
+        run: >-
+          ./Scripts/TestPlugin.ps1
+          -EngineRoot '${{ vars.UE_ROOT }}'
+          -Project '${{ runner.temp }}\UnrealBMFont-Host\UnrealBMFontHost.uproject'
+          -ReportDirectory '${{ runner.temp }}\UnrealBMFont-Reports'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: UnrealBMFont-Win64
+          path: |
+            ${{ runner.temp }}\UnrealBMFont-Package
+            ${{ runner.temp }}\UnrealBMFont-Reports

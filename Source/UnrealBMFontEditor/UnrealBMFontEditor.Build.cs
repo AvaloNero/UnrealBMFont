@@ -1,0 +1,26 @@
+// Copyright (c) 2026 AvaloNero. Licensed under the MIT License.
+
+using UnrealBuildTool;
+
+public class UnrealBMFontEditor : ModuleRules
+{
+	public UnrealBMFontEditor(ReadOnlyTargetRules Target) : base(Target)
+	{
+		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+
+		PrivateDependencyModuleNames.AddRange(
+			new[]
+			{
+				"Core",
+				"CoreUObject",
+				"Engine",
+				"ImageCore",
+				"AssetDefinition",
+				"Projects",
+				"SlateCore",
+				"UnrealBMFont",
+				"UnrealEd"
+			}
+		);
+	}
+}
