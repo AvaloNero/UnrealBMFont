@@ -325,6 +325,46 @@ bool FBMFontFactoryPackedImportTest::RunTest(const FString& Parameters)
 		TEXT("Packed page resolves a render resource"),
 		Asset->GetPageRenderResource(0)
 	);
+
+	// The packaged packed sample must stay importable as shipped.
+	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealBMFont"));
+	if (!TestTrue(TEXT("UnrealBMFont plugin is discoverable"), Plugin.IsValid()))
+	{
+		return false;
+	}
+	const FString SampleFilename = FPaths::Combine(
+		Plugin->GetBaseDir(),
+		TEXT("Samples/Packed/Packed.fnt")
+	);
+	if (!TestTrue(TEXT("Packaged Packed sample exists"), FPaths::FileExists(SampleFilename)))
+	{
+		return false;
+	}
+
+	AddExpectedMessage(
+		TEXT("The descriptor uses packed texture channels"),
+		ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains,
+		1,
+		false
+	);
+	bOperationCanceled = false;
+	UBMFontAsset* SampleAsset = Cast<UBMFontAsset>(Factory->FactoryCreateFile(
+		UBMFontAsset::StaticClass(),
+		Package,
+		TEXT("PackedSample"),
+		RF_Public | RF_Standalone | RF_Transient,
+		SampleFilename,
+		TEXT(""),
+		GWarn,
+		bOperationCanceled
+	));
+	if (!TestNotNull(TEXT("Packaged Packed sample imports"), SampleAsset))
+	{
+		return false;
+	}
+	TestEqual(TEXT("Packed sample glyph count"), SampleAsset->FontData.Glyphs.Num(), 3);
+	TestTrue(TEXT("Packed sample keeps the packed flag"), SampleAsset->FontData.Common.bPacked);
 	return true;
 }
 
