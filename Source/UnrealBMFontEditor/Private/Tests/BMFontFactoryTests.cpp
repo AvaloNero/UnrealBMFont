@@ -4,6 +4,7 @@
 
 #include "BMFontFactory.h"
 
+#include "AssetEditor/SBMFontAtlasPreview.h"
 #include "BMFontAsset.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Engine/Texture2D.h"
@@ -324,6 +325,57 @@ bool FBMFontFactoryPackedImportTest::RunTest(const FString& Parameters)
 		TEXT("Packed page resolves a render resource"),
 		Asset->GetPageRenderResource(0)
 	);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FBMFontAtlasPreviewSmokeTest,
+	"UnrealBMFont.Editor.AtlasPreviewSmoke",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBMFontAtlasPreviewSmokeTest::RunTest(const FString& Parameters)
+{
+	UBMFontAsset* Asset = NewObject<UBMFontAsset>();
+	FBMFontData Data;
+	Data.DescriptorFormat = EBMFontDescriptorFormat::Text;
+	Data.Common.LineHeight = 8;
+	Data.Common.Base = 8;
+	Data.Common.ScaleWidth = 8;
+	Data.Common.ScaleHeight = 8;
+	Data.Common.PageCount = 2;
+	for (int32 PageId = 0; PageId < 2; ++PageId)
+	{
+		FBMFontPage& Page = Data.Pages.AddDefaulted_GetRef();
+		Page.Id = PageId;
+		Page.File = TEXT("atlas.png");
+		Page.Texture = NewObject<UTexture2D>(Asset);
+	}
+	FBMFontGlyph& Glyph = Data.Glyphs.Add(65);
+	Glyph.Codepoint = 65;
+	Glyph.Width = 4;
+	Glyph.Height = 4;
+	Glyph.XAdvance = 4;
+	Glyph.Page = 1;
+	Asset->SetFontData(MoveTemp(Data));
+
+	int32 SelectedCodepoint = INDEX_NONE;
+	TSharedRef<SBMFontAtlasPreview> Preview = SNew(SBMFontAtlasPreview)
+		.FontAsset(Asset)
+		.PageId(0)
+		.OnGlyphSelected(FOnBMFontGlyphSelected::CreateLambda(
+			[&SelectedCodepoint](const int32 Codepoint)
+			{
+				SelectedCodepoint = Codepoint;
+			}
+		));
+
+	Preview->SlatePrepass(1.0f);
+	TestTrue(TEXT("Atlas preview prepasses"), Preview->GetDesiredSize().X >= 0.0f);
+
+	Preview->SetPageId(1);
+	Preview->SetSelectedCodepoint(65);
+	Preview->SlatePrepass(1.0f);
+	TestEqual(TEXT("Selection callback does not fire without input"), SelectedCodepoint, INDEX_NONE);
 	return true;
 }
 
