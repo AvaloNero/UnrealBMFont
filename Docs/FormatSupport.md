@@ -11,7 +11,7 @@
 | Multiple pages | Supported | Page IDs are resolved to their declared files and textures. |
 | Unicode scalar IDs | Supported | Supplementary-plane code points are decoded as one glyph. |
 | Kerning pairs | Supported | Applied before tracking. |
-| Packed channels | Parsed only | Import is rejected until a channel-aware rendering material is available. |
+| Packed channels | Supported | Pages render through a channel-extraction material (see below). |
 
 ## Import validation
 
@@ -25,6 +25,19 @@
 ## Image formats
 
 Page decoding is delegated to Unreal's `UTextureFactory`. PNG is covered by automated import tests. Other formats supported by a given Unreal installation may work but are not part of the current compatibility claim.
+
+## Packed-channel rendering
+
+When `common.packed=1`, each page renders through a dynamic instance of the plugin's `M_BMFontPacked` UI material instead of the raw texture. The material recovers glyph coverage by dotting the texel with per-channel weights derived from `alphaChnl`/`redChnl`/`greenChnl`/`blueChnl`:
+
+- Channels marked **Glyph** or **Glyph + Outline** contribute their sampled value.
+- If no channel carries coverage but one is marked **One**, coverage is the constant 1 (solid glyph rectangles).
+- If every channel is **Unknown**, coverage falls back to the texture's alpha channel, matching the non-packed interpretation.
+
+Outline channels are not composited separately; the outline appearance of packed atlases is flattened into whichever channels carry glyph coverage. Per-asset overrides are possible through the asset's **Packed Render Material** property, which must keep the `FontAtlas`, `ChannelWeights`, and `ChannelBias` parameter contract.
+
+Packed page textures import with sRGB disabled, because the channels encode coverage rather than display color. Reimport preserves an existing texture's settings, so a texture first imported from a non-packed descriptor keeps sRGB enabled and triggers a warning; disable sRGB manually in that case.
+
 
 ## Text behavior
 

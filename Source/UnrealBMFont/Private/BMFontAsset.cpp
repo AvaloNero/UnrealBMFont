@@ -2,12 +2,20 @@
 
 #include "BMFontAsset.h"
 
+#include "BMFontRendering.h"
+#include "Engine/Texture2D.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "UnrealBMFontModule.h"
+
 #if WITH_EDITORONLY_DATA
 #include "EditorFramework/AssetImportData.h"
 #endif
 
 UBMFontAsset::UBMFontAsset()
 {
+	PackedRenderMaterial = TSoftObjectPtr<UMaterialInterface>(
+		FSoftObjectPath(TEXT("/UnrealBMFont/M_BMFontPacked.M_BMFontPacked"))
+	);
 #if WITH_EDITORONLY_DATA
 	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
@@ -52,6 +60,54 @@ UTexture2D* UBMFontAsset::GetPageTexture(const int32 PageId) const
 	return nullptr;
 }
 
+UObject* UBMFontAsset::GetPageRenderResource(const int32 PageId)
+{
+	const FBMFontPage* Page = FindPage(PageId);
+	if (Page == nullptr || Page->Texture == nullptr)
+	{
+		return nullptr;
+	}
+	if (!FontData.Common.bPacked)
+	{
+		return Page->Texture;
+	}
+
+	if (const TObjectPtr<UMaterialInstanceDynamic>* Cached = PageMaterialCache.Find(PageId))
+	{
+		if (*Cached != nullptr && PageMaterialSources.FindRef(PageId).Get() == Page->Texture)
+		{
+			return *Cached;
+		}
+	}
+
+	UMaterialInterface* BaseMaterial = PackedRenderMaterial.LoadSynchronous();
+	if (BaseMaterial == nullptr)
+	{
+		if (!bWarnedMissingPackedMaterial)
+		{
+			bWarnedMissingPackedMaterial = true;
+			UE_LOG(
+				LogUnrealBMFont,
+				Warning,
+				TEXT("BMFont asset '%s' uses packed channels but no packed render material could be loaded; "
+					"pages fall back to raw textures and will render incorrectly."),
+				*GetName()
+			);
+		}
+		return Page->Texture;
+	}
+
+	UMaterialInstanceDynamic* MaterialInstance = UMaterialInstanceDynamic::Create(BaseMaterial, this);
+	const FBMFontPackedChannelMapping Mapping = BMFontRendering::ComputePackedChannelMapping(FontData.Common);
+	MaterialInstance->SetTextureParameterValue(TEXT("FontAtlas"), Page->Texture);
+	MaterialInstance->SetVectorParameterValue(TEXT("ChannelWeights"), Mapping.ChannelWeights);
+	MaterialInstance->SetScalarParameterValue(TEXT("ChannelBias"), Mapping.ConstantBias);
+
+	PageMaterialCache.Add(PageId, MaterialInstance);
+	PageMaterialSources.Add(PageId, Page->Texture);
+	return MaterialInstance;
+}
+
 const FBMFontGlyph* UBMFontAsset::FindGlyph(const int32 Codepoint) const
 {
 	return FontData.Glyphs.Find(Codepoint);
@@ -85,6 +141,7 @@ uint32 UBMFontAsset::GetDataRevision() const
 void UBMFontAsset::SetFontData(FBMFontData InFontData)
 {
 	FontData = MoveTemp(InFontData);
+	ClearRenderResourceCache();
 	RebuildLookup();
 	++DataRevision;
 }
@@ -99,6 +156,7 @@ void UBMFontAsset::PostLoad()
 void UBMFontAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+	ClearRenderResourceCache();
 	RebuildLookup();
 	++DataRevision;
 }
@@ -112,4 +170,11 @@ void UBMFontAsset::RebuildLookup()
 	{
 		KerningLookup.Add(FBMFontKerningPair::MakeKey(Pair.First, Pair.Second), Pair.Amount);
 	}
+}
+
+void UBMFontAsset::ClearRenderResourceCache()
+{
+	PageMaterialCache.Reset();
+	PageMaterialSources.Reset();
+	bWarnedMissingPackedMaterial = false;
 }

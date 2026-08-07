@@ -228,4 +228,103 @@ bool FBMFontFactoryShowcaseFixtureTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FBMFontFactoryPackedImportTest,
+	"UnrealBMFont.Editor.PackedFixtureImport",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBMFontFactoryPackedImportTest::RunTest(const FString& Parameters)
+{
+	const FString UniqueId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	const FString TempDirectory = FPaths::Combine(
+		FPaths::ProjectIntermediateDir(),
+		TEXT("UnrealBMFontTests"),
+		UniqueId
+	);
+	TestTrue(TEXT("Temporary source directory can be created"), IFileManager::Get().MakeDirectory(*TempDirectory, true));
+	ON_SCOPE_EXIT
+	{
+		IFileManager::Get().DeleteDirectory(*TempDirectory, false, true);
+	};
+
+	const FString AtlasFilename = FPaths::Combine(TempDirectory, TEXT("packed-atlas.png"));
+	{
+		TArray<FColor> Pixels;
+		Pixels.Init(FColor::White, 4 * 4);
+		TArray<uint8> PngBytes;
+		FImageUtils::ThumbnailCompressImageArray(4, 4, Pixels, PngBytes);
+		if (!TestTrue(TEXT("Packed PNG fixture can be written"), FFileHelper::SaveArrayToFile(PngBytes, *AtlasFilename)))
+		{
+			return false;
+		}
+	}
+
+	const FString DescriptorFilename = FPaths::Combine(TempDirectory, TEXT("packed-test.fnt"));
+	const FString Descriptor =
+		FString(TEXT("info face=\"Packed Test\" size=4 unicode=1 smooth=0 padding=0,0,0,0 spacing=0,0\n"))
+		+ TEXT("common lineHeight=4 base=4 scaleW=4 scaleH=4 pages=1 packed=1 alphaChnl=3 redChnl=0 greenChnl=3 blueChnl=3\n")
+		+ TEXT("page id=0 file=\"packed-atlas.png\"\n")
+		+ TEXT("chars count=1\n")
+		+ TEXT("char id=65 x=0 y=0 width=4 height=4 xoffset=0 yoffset=0 xadvance=4 page=0 chnl=4\n");
+	if (!TestTrue(
+		TEXT("Packed descriptor fixture can be written"),
+		FFileHelper::SaveStringToFile(Descriptor, *DescriptorFilename, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)))
+	{
+		return false;
+	}
+
+	const FString PackageName = FString::Printf(TEXT("/Engine/Transient/UnrealBMFontPacked_%s"), *UniqueId);
+	UPackage* Package = CreatePackage(*PackageName);
+	Package->SetFlags(RF_Transient);
+	UBMFontFactory* Factory = NewObject<UBMFontFactory>();
+
+	// Packed imports announce the channel-extraction path; expecting the message keeps
+	// the run at zero warning results while asserting the diagnostic still fires.
+	AddExpectedMessage(
+		TEXT("The descriptor uses packed texture channels"),
+		ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains,
+		1,
+		false
+	);
+
+	bool bOperationCanceled = false;
+	UBMFontAsset* Asset = Cast<UBMFontAsset>(Factory->FactoryCreateFile(
+		UBMFontAsset::StaticClass(),
+		Package,
+		TEXT("PackedTest"),
+		RF_Public | RF_Standalone | RF_Transient,
+		DescriptorFilename,
+		TEXT(""),
+		GWarn,
+		bOperationCanceled
+	));
+	TestFalse(TEXT("Packed import is not cancelled"), bOperationCanceled);
+	if (!TestNotNull(TEXT("Factory imports a packed BMFont asset"), Asset))
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("Packed flag survives import"), Asset->FontData.Common.bPacked);
+	TestEqual(
+		TEXT("Packed glyph channel metadata survives import"),
+		Asset->FontData.Common.RedChannel,
+		EBMFontChannelContent::Glyph
+	);
+
+	const FBMFontPage* Page = Asset->FindPage(0);
+	if (!TestNotNull(TEXT("Packed page exists"), Page)
+		|| !TestNotNull(TEXT("Packed page has a texture"), Page != nullptr ? Page->Texture.Get() : nullptr))
+	{
+		return false;
+	}
+	TestFalse(TEXT("Packed page texture disables sRGB"), Page->Texture->SRGB);
+
+	TestNotNull(
+		TEXT("Packed page resolves a render resource"),
+		Asset->GetPageRenderResource(0)
+	);
+	return true;
+}
+
 #endif

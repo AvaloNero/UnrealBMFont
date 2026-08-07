@@ -118,7 +118,8 @@ namespace
 		const FString& Filename,
 		FFeedbackContext* Warn,
 		bool& bOutOperationCanceled,
-		const bool bApplyImportDefaults)
+		const bool bApplyImportDefaults,
+		const bool bPackedPage)
 	{
 		UTextureFactory::SuppressImportOverwriteDialog(false);
 		UTextureFactory* TextureFactory = NewObject<UTextureFactory>();
@@ -140,6 +141,11 @@ namespace
 			Texture->MipGenSettings = TMGS_NoMipmaps;
 			Texture->NeverStream = true;
 			Texture->Filter = TF_Bilinear;
+			if (bPackedPage)
+			{
+				// Packed channels encode glyph coverage, not display color; sRGB decode would distort it.
+				Texture->SRGB = false;
+			}
 			Texture->PostEditChange();
 		}
 		return Texture;
@@ -264,10 +270,9 @@ UBMFontAsset* UBMFontFactory::ImportFromFile(
 	{
 		UE_LOG(
 			LogUnrealBMFont,
-			Error,
-			TEXT("Packed-channel BMFont descriptors are not renderable by BMFont Text and cannot be imported yet.")
+			Display,
+			TEXT("BMFont descriptor uses packed channels; pages render through the channel-extraction material.")
 		);
-		return nullptr;
 	}
 
 	TMap<int32, FString> PageFiles;
@@ -298,6 +303,16 @@ UBMFontAsset* UBMFontFactory::ImportFromFile(
 		}
 
 		UTexture2D* ExistingTexture = ExistingTextures.FindRef(Page.Id);
+		if (ParseResult.Data.Common.bPacked && ExistingTexture != nullptr && ExistingTexture->SRGB)
+		{
+			UE_LOG(
+				LogUnrealBMFont,
+				Warning,
+				TEXT("BMFont page %d is packed but the existing texture has sRGB enabled; "
+					"disable sRGB on the page texture for correct coverage extraction."),
+				Page.Id
+			);
+		}
 		UObject* TextureParent = ExistingTexture != nullptr ? ExistingTexture->GetOuter() : InParent;
 		const FName TextureName = ExistingTexture != nullptr
 			? ExistingTexture->GetFName()
@@ -315,7 +330,8 @@ UBMFontAsset* UBMFontFactory::ImportFromFile(
 			*PageFilename,
 			Warn,
 			bOutOperationCanceled,
-			ExistingTexture == nullptr
+			ExistingTexture == nullptr,
+			ParseResult.Data.Common.bPacked
 		);
 		if (bOutOperationCanceled || Page.Texture == nullptr)
 		{

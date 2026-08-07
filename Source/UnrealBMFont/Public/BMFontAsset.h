@@ -7,6 +7,8 @@
 #include "BMFontAsset.generated.h"
 
 class UAssetImportData;
+class UMaterialInstanceDynamic;
+class UMaterialInterface;
 class FBMFontLayout;
 
 /** Imported BMFont descriptor data and hard references to every atlas page. */
@@ -26,6 +28,13 @@ public:
 	TObjectPtr<UAssetImportData> AssetImportData;
 #endif
 
+	/**
+	 * Material that extracts glyph coverage from packed-channel atlas pages.
+	 * Defaults to the plugin's M_BMFontPacked; ignored for non-packed descriptors.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BMFont", AdvancedDisplay)
+	TSoftObjectPtr<UMaterialInterface> PackedRenderMaterial;
+
 	UFUNCTION(BlueprintPure, Category = "BMFont")
 	bool HasGlyph(int32 Codepoint) const;
 
@@ -41,6 +50,12 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "BMFont")
 	UTexture2D* GetPageTexture(int32 PageId) const;
+
+	/**
+	 * Returns the Slate brush resource for a page: the page texture itself, or a cached
+	 * channel-extraction material instance when the descriptor uses packed channels.
+	 */
+	UObject* GetPageRenderResource(int32 PageId);
 
 	const FBMFontGlyph* FindGlyph(int32 Codepoint) const;
 	const FBMFontPage* FindPage(int32 PageId) const;
@@ -58,7 +73,14 @@ private:
 	friend class FBMFontLayout;
 
 	void RebuildLookup();
+	void ClearRenderResourceCache();
 
 	TMap<uint64, int32> KerningLookup;
 	uint32 DataRevision = 1;
+
+	UPROPERTY(Transient)
+	TMap<int32, TObjectPtr<UMaterialInstanceDynamic>> PageMaterialCache;
+
+	TMap<int32, TWeakObjectPtr<UTexture2D>> PageMaterialSources;
+	bool bWarnedMissingPackedMaterial = false;
 };

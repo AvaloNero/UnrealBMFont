@@ -368,26 +368,17 @@ void SBMFontText::EnsureBrushes() const
 		return;
 	}
 
-	TMap<int32, UTexture2D*> PageTextures;
-	for (const FBMFontPage& Page : Font->FontData.Pages)
-	{
-		if (Page.Texture != nullptr)
-		{
-			PageTextures.Add(Page.Id, Page.Texture);
-		}
-	}
-
 	for (const TPair<int32, FBMFontGlyph>& Entry : Font->FontData.Glyphs)
 	{
-		UTexture2D* const* Texture = PageTextures.Find(Entry.Value.Page);
-		if (Texture == nullptr || *Texture == nullptr)
+		UObject* Resource = Font->GetPageRenderResource(Entry.Value.Page);
+		if (Resource == nullptr)
 		{
 			continue;
 		}
 
 		FSlateBrush& Brush = GlyphBrushes.Add(Entry.Key);
 		Brush.DrawAs = ESlateBrushDrawType::Image;
-		Brush.SetResourceObject(*Texture);
+		Brush.SetResourceObject(Resource);
 		Brush.SetImageSize(FVector2D(Entry.Value.Width, Entry.Value.Height));
 		Brush.SetUVRegion(Entry.Value.GetUvRegion(Font->FontData.Common));
 	}
