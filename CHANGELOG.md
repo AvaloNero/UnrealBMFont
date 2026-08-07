@@ -2,6 +2,23 @@
 
 All notable changes to Unreal BMFont are documented here. The project follows [Semantic Versioning](https://semver.org/) and the structure of [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.0] - 2026-08-07
+
+### Added
+
+- Channel-aware rendering for packed-channel (`packed=1`) atlases: each page renders through a per-page dynamic instance of the bundled `M_BMFontPacked` UI material, with coverage extracted per the descriptor's channel metadata. The asset's **Packed Render Material** property overrides the material per asset.
+- Packed descriptors now import instead of being rejected; packed page textures default to sRGB disabled, and reimport onto an sRGB-enabled texture warns.
+- `UBMFontRichTextBlock`, a rich text adapter that renders tagged (and optionally plain) runs with a BMFont asset while leaving the plain-text core untouched. Kerning resolves within each run.
+- Editor thumbnails for BMFont assets, drawn from the first atlas page.
+- A read-only font/atlas inspector (double-click an asset) with a descriptor summary, an atlas preview with glyph rectangles and click-to-select, and a glyph table.
+- Screenshot-based render tests (`UnrealBMFont.Render.*`) that draw `SBMFontText` off-screen and compare against committed ground truth, including the packed material path. They skip cleanly under NullRHI; ground truth regenerates with `-UpdateBMFontGroundTruth`.
+- `TestPlugin.ps1 -DisableNullRHI` for GPU runs.
+
+### Changed
+
+- The plugin descriptor now allows content (`CanContainContent`) to ship `M_BMFontPacked`.
+- The packed-channel parse warning now reflects material-path rendering.
+
 ## [0.1.0] - 2026-08-05
 
 ### Added

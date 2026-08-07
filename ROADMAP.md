@@ -2,13 +2,6 @@
 
 The roadmap records direction, not a compatibility promise.
 
-## 0.2
-
-- Add a small Rich Text run/decorator adapter without changing the plain-text core.
-- Add a channel-aware material path for packed BMFont atlases.
-- Add editor thumbnails and a read-only font/atlas inspector.
-- Add screenshot-based widget rendering tests.
-
 ## 0.3
 
 - Validate Linux and macOS builds and runtime rendering.

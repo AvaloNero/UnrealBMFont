@@ -10,10 +10,14 @@
 ## Verification
 
 - Run `Scripts/GenerateBrandAssets.ps1` and confirm it produces no unintended visual diff.
+- Regenerate `Content/M_BMFontPacked.uasset` with `Scripts/GeneratePackedMaterial.py` and confirm the parameter contract is unchanged.
+- Regenerate the render-test ground truth with `-UpdateBMFontGroundTruth` on the reference GPU and review every PNG diff.
 - Run `Scripts/BuildPlugin.ps1` for every claimed target platform.
 - Confirm UnrealEditor Development, UnrealGame Development, and UnrealGame Shipping all succeed without warnings introduced by the plugin.
 - Run `Scripts/TestPlugin.ps1`; archive `index.json` and the editor log.
+- Run the `UnrealBMFont.Render.*` suite on a GPU (no `-NullRHI`) and archive its report.
 - Import `Samples/Minimal/Minimal.fnt` in a clean project and visually inspect `AB`, fallback, wrap, tint, shadow, and reimport.
+- Open the asset inspector on an imported font and verify the summary, atlas overlay, and glyph table.
 - Cook and launch a packaged Development build containing `UBMFontText`.
 - Launch a packaged Shipping build and retain a screenshot or deterministic runtime marker.
 
@@ -23,7 +27,7 @@
 - Confirm Runtime has no dependency on UnrealEd or AssetDefinition.
 - Confirm the test module is absent from UnrealGame targets.
 - Confirm the packaged descriptor has `Installed=true` and `EnabledByDefault=false`.
-- Confirm the package contains `LICENSE`, `THIRD_PARTY_NOTICES.md`, README files, and format/compatibility documentation.
+- Confirm the package contains `LICENSE`, `THIRD_PARTY_NOTICES.md`, README files, format/compatibility documentation, and `Content/M_BMFontPacked.uasset`.
 - Scan for local absolute paths, credentials, private URLs, stale vendor names, and generated host-project files.
 
 ## Publish
