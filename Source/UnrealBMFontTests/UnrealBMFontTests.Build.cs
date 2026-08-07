@@ -14,7 +14,11 @@ public class UnrealBMFontTests : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
+				"Projects",
+				"RHI",
+				"Slate",
 				"SlateCore",
+				"UMG",
 				"UnrealBMFont"
 			}
 		);

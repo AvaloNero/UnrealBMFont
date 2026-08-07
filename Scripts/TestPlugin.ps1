@@ -12,7 +12,9 @@ param(
 
 	[string]$LogFile,
 
-	[string]$TestFilter = 'UnrealBMFont'
+	[string]$TestFilter = 'UnrealBMFont',
+
+	[switch]$DisableNullRHI
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,7 +79,6 @@ $arguments = @(
 	$resolvedProject,
 	'-Unattended',
 	'-NoSplash',
-	'-NullRHI',
 	'-NoSound',
 	'-NoP4',
 	'-NoPause',
@@ -88,6 +89,11 @@ $arguments = @(
 	"-ReportExportPath=$fullReportDirectory",
 	"-AbsLog=$fullLogFile"
 )
+if (-not $DisableNullRHI) {
+	# NullRHI stays the default so the dependency-free suite runs on any machine;
+	# the UnrealBMFont.Render.* screenshot tests skip themselves without a GPU.
+	$arguments += '-NullRHI'
+}
 
 & $editor @arguments
 $editorExitCode = $LASTEXITCODE

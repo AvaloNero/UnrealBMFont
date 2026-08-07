@@ -13,6 +13,31 @@ The `UnrealBMFont.*` suite covers:
 - The packaged multilingual Showcase fixture, including representative Latin, Hiragana, Chinese, and fallback code points.
 - UI texture defaults, source path tracking, descriptor reimport, and preservation of user-edited texture filtering.
 - Slate desired-size calculation and invalidation after text changes.
+- Rich text run measurement through `UBMFontRichTextBlock`, including kerning, fallback, tagged runs, and runtime font assignment.
+- Packed-channel mapping, packed import through `UBMFontFactory`, and per-page render resource resolution.
+
+## Screenshot render tests
+
+The `UnrealBMFont.Render.*` tests draw `SBMFontText` off-screen through `FWidgetRenderer` and compare pixels against ground-truth PNGs in `Samples/GroundTruth`. They require a real RHI: under `-NullRHI` they report an informational skip and pass, so the default headless run stays green.
+
+Run them on a GPU:
+
+```powershell
+& "C:\Path\To\Engine\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "D:\Projects\BMFontHost\BMFontHost.uproject" `
+  -Unattended -NoSplash -NoSound -NoP4 -NoPause -stdout -FullStdOutLogOutput `
+  -ExecCmds="Automation RunTests UnrealBMFont.Render" `
+  -TestExit="Automation Test Queue Empty" `
+  -ReportExportPath="$env:TEMP\UnrealBMFont-RenderReports"
+```
+
+Ground truth lives in the repository and is treated as source. Regenerate it deliberately after an intended rendering change, on the reference GPU/driver, and review the PNG diff:
+
+```powershell
+# Same command as above, plus:
+  -UpdateBMFontGroundTruth
+```
+
+Comparison allows a small per-channel delta and a small mismatching-pixel ratio so minor driver or sampler differences do not flake; a structural rendering change still fails. Reusing `UnrealBMFont.Render.PackedAtlas` also exercises the packed material path end to end.
 
 ## Run against a host project
 
