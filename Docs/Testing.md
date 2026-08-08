@@ -13,8 +13,8 @@ The `UnrealBMFont.*` suite covers:
 - The packaged multilingual Showcase fixture, including representative Latin, Hiragana, Chinese, and fallback code points.
 - UI texture defaults, source path tracking, descriptor reimport, and preservation of user-edited texture filtering.
 - Slate desired-size calculation and invalidation after text changes.
-- Rich text run measurement through `UBMFontRichTextBlock`, including kerning, fallback, tagged runs, and runtime font assignment.
-- Packed-channel mapping, packed import through `UBMFontFactory`, and per-page render resource resolution.
+- Rich text run measurement through `UBMFontRichTextBlock`, including kerning, fallback, tagged and empty runs, runtime font assignment, and screenshot coverage for ellipsis painting.
+- Packed-channel mapping, packed import through `UBMFontFactory`, and render-resource separation by page and glyph channel.
 
 ## Screenshot render tests
 
@@ -37,7 +37,7 @@ Ground truth lives in the repository and is treated as source. Regenerate it del
   -UpdateBMFontGroundTruth
 ```
 
-Comparison allows a small per-channel delta and a small mismatching-pixel ratio so minor driver or sampler differences do not flake; a structural rendering change still fails. Reusing `UnrealBMFont.Render.PackedAtlas` also exercises the packed material path end to end.
+Comparison allows a small per-channel delta and a small mismatching-pixel ratio so minor driver or sampler differences do not flake; a structural rendering change still fails. `UnrealBMFont.Render.PackedAtlas` exercises overlapping glyph rectangles stored in different channels, and `UnrealBMFont.Render.RichTextEllipsis` verifies the custom rich-text paint path honors overflow policy.
 
 ## Run against a host project
 

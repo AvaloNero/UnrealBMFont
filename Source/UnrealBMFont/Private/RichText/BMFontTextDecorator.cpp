@@ -57,9 +57,15 @@ TSharedRef<ISlateRun> FBMFontTextDecorator::Create(
 		RunInfo.MetaData.Add(Pair.Key, OriginalText.Mid(Pair.Value.BeginIndex, Length));
 	}
 
-	const FTextRange SourceRange = RunParseResult.ContentRange.Len() > 0
-		? RunParseResult.ContentRange
-		: RunParseResult.OriginalRange;
+	FTextRange SourceRange = RunParseResult.OriginalRange;
+	if (!RunParseResult.Name.IsEmpty())
+	{
+		const bool bHasContentRange = RunParseResult.ContentRange.BeginIndex != INDEX_NONE
+			&& RunParseResult.ContentRange.EndIndex != INDEX_NONE;
+		SourceRange = bHasContentRange
+			? RunParseResult.ContentRange
+			: FTextRange(RunParseResult.OriginalRange.EndIndex, RunParseResult.OriginalRange.EndIndex);
+	}
 
 	FTextRange ModelRange;
 	ModelRange.BeginIndex = InOutModelText->Len();

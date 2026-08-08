@@ -18,7 +18,8 @@ The plugin is currently beta (`0.2.0`). Its runtime API is small and usable, but
 - Imports and references the descriptor's real page files, including multi-page atlases.
 - Preserves Unicode code points, glyph offsets/advances, line metrics, and kerning pairs.
 - Provides `UBMFontAsset`, `UBMFontText`, the lower-level `SBMFontText` Slate widget, and the `UBMFontRichTextBlock` rich text adapter.
-- Renders packed-channel atlases through a channel-extraction UI material.
+- Renders packed-channel atlases through a channel-extraction UI material, honoring each glyph's `char.chnl` mask.
+- Supports BMFont runs inside Rich Text, including empty tags and ellipsis overflow policies.
 - Supports wrapping, justification, margins, line-height control, letter spacing, tint, shadow, fallback glyphs, text bindings, and pixel snapping.
 - Supports asset reimport while preserving user-edited texture filtering.
 - Ships editor thumbnails and a read-only font/atlas inspector with glyph rectangles.

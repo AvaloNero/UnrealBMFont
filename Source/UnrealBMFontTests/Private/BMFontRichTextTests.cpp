@@ -110,6 +110,14 @@ bool FBMFontRichTextTaggedRunsTest::RunTest(const FString& Parameters)
 	DesiredSize = GetRichTextDesiredSize(Widget);
 	TestEqual(TEXT("A renamed tag still matches"), DesiredSize.X, 18.0, 0.5);
 
+	Widget->SetText(FText::FromString(TEXT("<fancy></>")));
+	DesiredSize = GetRichTextDesiredSize(Widget);
+	TestEqual(TEXT("An empty tagged run does not render its markup"), DesiredSize.X, 0.0, 0.5);
+
+	Widget->SetText(FText::FromString(TEXT("<fancy/>")));
+	DesiredSize = GetRichTextDesiredSize(Widget);
+	TestEqual(TEXT("A self-closing tagged run does not render its markup"), DesiredSize.X, 0.0, 0.5);
+
 	return true;
 }
 

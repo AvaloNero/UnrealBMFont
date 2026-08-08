@@ -3,20 +3,26 @@
 #pragma once
 
 #include "Toolkits/AssetEditorToolkit.h"
+#include "Types/SlateEnums.h"
 
 class SBMFontAtlasPreview;
+class STextBlock;
 class SVerticalBox;
 class UBMFontAsset;
 struct FAssetOpenArgs;
+template <typename OptionType>
+class SComboBox;
 
 /**
  * Read-only font/atlas inspector opened when double-clicking a BMFont asset.
  * Shows descriptor metadata, the selected atlas page with glyph rectangles,
- * and a sortable glyph table. Editing happens through reimport, not this editor.
+ * and a glyph table. Editing happens through reimport, not this editor.
  */
 class FBMFontAssetEditor final : public FAssetEditorToolkit
 {
 public:
+	virtual ~FBMFontAssetEditor() override;
+
 	static void Open(UBMFontAsset* InAsset, const FAssetOpenArgs& OpenArgs);
 
 	void Init(UBMFontAsset* InAsset, const EToolkitMode::Type Mode, const TSharedPtr<IToolkitHost>& InitToolkitHost);
@@ -36,13 +42,23 @@ private:
 
 	TSharedRef<SWidget> BuildSummaryPanel();
 	TSharedRef<SWidget> BuildGlyphTable();
+	void PopulateSummaryPanel();
 	void AddSummaryRow(const TSharedRef<SVerticalBox>& Panel, const FText& Label, const FText& Value) const;
+	void HandlePageSelected(TSharedPtr<int32> Item, ESelectInfo::Type SelectInfo);
 	void HandleGlyphSelected(int32 Codepoint);
+	void HandlePostReimport(UObject* ReimportedObject, bool bSuccess);
+	void RefreshEditorData();
+	void RefreshPageOptions();
 	void RefreshGlyphRows();
 
 	TObjectPtr<UBMFontAsset> EditingAsset;
+	TSharedPtr<SVerticalBox> SummaryPanel;
 	TSharedPtr<SBMFontAtlasPreview> AtlasPreview;
+	TSharedPtr<SComboBox<TSharedPtr<int32>>> PageSelector;
+	TSharedPtr<STextBlock> PageLabel;
 	TSharedPtr<SListView<TSharedPtr<int32>>> GlyphListView;
+	TArray<TSharedPtr<int32>> PageOptions;
 	TArray<TSharedPtr<int32>> GlyphRows;
-	int32 CurrentPageId = 0;
+	FDelegateHandle PostReimportHandle;
+	int32 CurrentPageId = INDEX_NONE;
 };

@@ -28,11 +28,12 @@ Page decoding is delegated to Unreal's `UTextureFactory`. PNG is covered by auto
 
 ## Packed-channel rendering
 
-When `common.packed=1`, each page renders through a dynamic instance of the plugin's `M_BMFontPacked` UI material instead of the raw texture. The material recovers glyph coverage by dotting the texel with per-channel weights derived from `alphaChnl`/`redChnl`/`greenChnl`/`blueChnl`:
+When `common.packed=1`, glyphs render through dynamic instances of the plugin's `M_BMFontPacked` UI material instead of the raw texture. Render resources are cached by page ID and the glyph's `char.chnl` mask, so glyphs that share one atlas rectangle but occupy different channels remain independent. The material recovers coverage by combining `char.chnl` with `alphaChnl`/`redChnl`/`greenChnl`/`blueChnl`:
 
-- Channels marked **Glyph** or **Glyph + Outline** contribute their sampled value.
-- If no channel carries coverage but one is marked **One**, coverage is the constant 1 (solid glyph rectangles).
-- If every channel is **Unknown**, coverage falls back to the texture's alpha channel, matching the non-packed interpretation.
+- `char.chnl` uses the BMFont bit mask: blue `1`, green `2`, red `4`, alpha `8`, or all channels `15`.
+- Within that mask, a channel marked **Glyph** or **Glyph + Outline** supplies sampled coverage.
+- If the selected channel is marked **One**, coverage is the constant 1 (solid glyph rectangles).
+- If channel metadata is missing or contradictory, the renderer still honors the glyph's channel mask. A descriptor with no usable glyph mask or metadata falls back to alpha.
 
 Outline channels are not composited separately; the outline appearance of packed atlases is flattened into whichever channels carry glyph coverage. Per-asset overrides are possible through the asset's **Packed Render Material** property, which must keep the `FontAtlas`, `ChannelWeights`, and `ChannelBias` parameter contract.
 

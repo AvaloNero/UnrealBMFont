@@ -18,7 +18,7 @@ bool FBMFontPackedChannelMappingTest::RunTest(const FString& Parameters)
 	{
 		FBMFontCommon Common;
 		Common.bPacked = false;
-		const FBMFontPackedChannelMapping Mapping = BMFontRendering::ComputePackedChannelMapping(Common);
+		const FBMFontPackedChannelMapping Mapping = BMFontRendering::ComputePackedChannelMapping(Common, 2);
 		TestTrue(
 			TEXT("Non-packed descriptors sample alpha as coverage"),
 			Mapping.ChannelWeights.Equals(FLinearColor(0.0f, 0.0f, 0.0f, 1.0f))
@@ -33,7 +33,7 @@ bool FBMFontPackedChannelMappingTest::RunTest(const FString& Parameters)
 		Common.RedChannel = EBMFontChannelContent::Zero;
 		Common.GreenChannel = EBMFontChannelContent::Glyph;
 		Common.BlueChannel = EBMFontChannelContent::Zero;
-		const FBMFontPackedChannelMapping Mapping = BMFontRendering::ComputePackedChannelMapping(Common);
+		const FBMFontPackedChannelMapping Mapping = BMFontRendering::ComputePackedChannelMapping(Common, 2);
 		TestTrue(
 			TEXT("Glyph channel becomes the coverage weight"),
 			Mapping.ChannelWeights.Equals(FLinearColor(0.0f, 1.0f, 0.0f, 0.0f))
@@ -48,7 +48,7 @@ bool FBMFontPackedChannelMappingTest::RunTest(const FString& Parameters)
 		Common.RedChannel = EBMFontChannelContent::Zero;
 		Common.GreenChannel = EBMFontChannelContent::Zero;
 		Common.BlueChannel = EBMFontChannelContent::Zero;
-		const FBMFontPackedChannelMapping Mapping = BMFontRendering::ComputePackedChannelMapping(Common);
+		const FBMFontPackedChannelMapping Mapping = BMFontRendering::ComputePackedChannelMapping(Common, 8);
 		TestTrue(
 			TEXT("GlyphAndOutline channels count as coverage"),
 			Mapping.ChannelWeights.Equals(FLinearColor(0.0f, 0.0f, 0.0f, 1.0f))
@@ -62,7 +62,7 @@ bool FBMFontPackedChannelMappingTest::RunTest(const FString& Parameters)
 		Common.RedChannel = EBMFontChannelContent::Zero;
 		Common.GreenChannel = EBMFontChannelContent::Zero;
 		Common.BlueChannel = EBMFontChannelContent::Zero;
-		const FBMFontPackedChannelMapping Mapping = BMFontRendering::ComputePackedChannelMapping(Common);
+		const FBMFontPackedChannelMapping Mapping = BMFontRendering::ComputePackedChannelMapping(Common, 8);
 		TestTrue(
 			TEXT("Always-one coverage drops sampling weights"),
 			Mapping.ChannelWeights.Equals(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f))
@@ -73,12 +73,26 @@ bool FBMFontPackedChannelMappingTest::RunTest(const FString& Parameters)
 	{
 		FBMFontCommon Common;
 		Common.bPacked = true;
-		const FBMFontPackedChannelMapping Mapping = BMFontRendering::ComputePackedChannelMapping(Common);
+		const FBMFontPackedChannelMapping Mapping = BMFontRendering::ComputePackedChannelMapping(Common, 2);
 		TestTrue(
-			TEXT("Unknown packed metadata falls back to alpha sampling"),
-			Mapping.ChannelWeights.Equals(FLinearColor(0.0f, 0.0f, 0.0f, 1.0f))
+			TEXT("Unknown packed metadata falls back to the glyph-selected channel"),
+			Mapping.ChannelWeights.Equals(FLinearColor(0.0f, 1.0f, 0.0f, 0.0f))
 		);
 		TestEqual(TEXT("Unknown packed metadata keeps zero bias"), Mapping.ConstantBias, 0.0f);
+	}
+
+	{
+		FBMFontCommon Common;
+		Common.bPacked = true;
+		Common.AlphaChannel = EBMFontChannelContent::Glyph;
+		Common.RedChannel = EBMFontChannelContent::Glyph;
+		Common.GreenChannel = EBMFontChannelContent::Glyph;
+		Common.BlueChannel = EBMFontChannelContent::Glyph;
+		const FBMFontPackedChannelMapping Mapping = BMFontRendering::ComputePackedChannelMapping(Common, 1);
+		TestTrue(
+			TEXT("A glyph channel mask selects blue even when every channel carries glyphs"),
+			Mapping.ChannelWeights.Equals(FLinearColor(0.0f, 0.0f, 1.0f, 0.0f))
+		);
 	}
 
 	return true;
@@ -106,7 +120,7 @@ bool FBMFontPageRenderResourceTest::RunTest(const FString& Parameters)
 		{
 			Data.Common.AlphaChannel = EBMFontChannelContent::Zero;
 			Data.Common.RedChannel = EBMFontChannelContent::Glyph;
-			Data.Common.GreenChannel = EBMFontChannelContent::Zero;
+			Data.Common.GreenChannel = EBMFontChannelContent::Glyph;
 			Data.Common.BlueChannel = EBMFontChannelContent::Zero;
 		}
 		FBMFontPage& Page = Data.Pages.AddDefaulted_GetRef();
@@ -119,6 +133,7 @@ bool FBMFontPageRenderResourceTest::RunTest(const FString& Parameters)
 		Glyph.Height = 4;
 		Glyph.XAdvance = 4;
 		Glyph.Page = 0;
+		Glyph.Channel = 4;
 		Asset->SetFontData(MoveTemp(Data));
 		return Asset;
 	};
@@ -131,7 +146,7 @@ bool FBMFontPageRenderResourceTest::RunTest(const FString& Parameters)
 	);
 
 	UBMFontAsset* PackedAsset = MakeAsset(true);
-	UObject* PackedResource = PackedAsset->GetPageRenderResource(0);
+	UObject* PackedResource = PackedAsset->GetPageRenderResource(0, 4);
 	UMaterialInstanceDynamic* MaterialInstance = Cast<UMaterialInstanceDynamic>(PackedResource);
 	if (!TestNotNull(TEXT("Packed pages render through a dynamic material instance"), MaterialInstance))
 	{
@@ -165,13 +180,31 @@ bool FBMFontPageRenderResourceTest::RunTest(const FString& Parameters)
 		MaterialInstance->GetVectorParameterValue(TEXT("ChannelWeights"), Weights)
 	);
 	TestTrue(
-		TEXT("Channel weights select the glyph channel"),
+		TEXT("Channel weights select the glyph's red channel"),
 		Weights.Equals(FLinearColor(1.0f, 0.0f, 0.0f, 0.0f))
+	);
+
+	UMaterialInstanceDynamic* GreenMaterialInstance = Cast<UMaterialInstanceDynamic>(
+		PackedAsset->GetPageRenderResource(0, 2)
+	);
+	if (!TestNotNull(TEXT("A second glyph channel resolves a material instance"), GreenMaterialInstance))
+	{
+		return false;
+	}
+	TestNotEqual(
+		TEXT("Different glyph channels do not share a page-wide material instance"),
+		GreenMaterialInstance,
+		MaterialInstance
+	);
+	TestTrue(
+		TEXT("Green glyphs receive green channel weights"),
+		GreenMaterialInstance->GetVectorParameterValue(TEXT("ChannelWeights"), Weights)
+		&& Weights.Equals(FLinearColor(0.0f, 1.0f, 0.0f, 0.0f))
 	);
 
 	TestEqual(
 		TEXT("Repeated resolution reuses the cached instance"),
-		PackedAsset->GetPageRenderResource(0),
+		PackedAsset->GetPageRenderResource(0, 4),
 		static_cast<UObject*>(MaterialInstance)
 	);
 

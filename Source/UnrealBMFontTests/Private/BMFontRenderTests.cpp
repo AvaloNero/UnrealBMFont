@@ -16,6 +16,8 @@
 #include "RHI.h"
 #include "ShaderCompiler.h"
 #include "Slate/WidgetRenderer.h"
+#include "Widgets/BMFontRichTextBlock.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/SBMFontText.h"
 
 namespace
@@ -41,7 +43,11 @@ namespace
 			: FString();
 	}
 
-	/** Solid white 8x10 glyphs on a transparent 32x32 atlas; A at x=0, V at x=8, replacement at x=16. */
+	/**
+	 * Plain: solid white 8x10 glyphs at x=0/8/16.
+	 * Packed: A and V overlap at x=0, with complementary coverage in green and red;
+	 * the replacement glyph occupies green at x=8. This catches page-wide channel mixing.
+	 */
 	UTexture2D* CreateGlyphAtlas(UObject* Outer, const bool bPacked)
 	{
 		constexpr int32 AtlasSize = 32;
@@ -56,28 +62,50 @@ namespace
 			Pixels[Index] = FColor::Transparent;
 		}
 
-		const auto FillGlyphRect = [Pixels, AtlasSize, bPacked](const int32 GlyphX)
+		const auto FillGlyphRect = [Pixels, AtlasSize](const int32 GlyphX)
 		{
 			for (int32 Y = 0; Y < 10; ++Y)
 			{
 				for (int32 X = 0; X < 8; ++X)
 				{
 					FColor& Pixel = Pixels[Y * AtlasSize + GlyphX + X];
-					if (bPacked)
-					{
-						// Coverage lives in the green channel of a packed atlas.
-						Pixel = FColor(0, 255, 0, 0);
-					}
-					else
-					{
-						Pixel = FColor::White;
-					}
+					Pixel = FColor::White;
 				}
 			}
 		};
-		FillGlyphRect(0);
-		FillGlyphRect(8);
-		FillGlyphRect(16);
+		if (bPacked)
+		{
+			for (int32 Y = 0; Y < 10; ++Y)
+			{
+				for (int32 X = 0; X < 8; ++X)
+				{
+					FColor& Pixel = Pixels[Y * AtlasSize + X];
+					Pixel = X < 4
+						? FColor(0, 255, 0, 0)
+						: FColor(255, 0, 0, 0);
+				}
+			}
+			for (int32 Y = 0; Y < 10; ++Y)
+			{
+				for (int32 X = 8; X < 16; ++X)
+				{
+					Pixels[Y * AtlasSize + X] = FColor(0, 255, 0, 0);
+				}
+			}
+		}
+		else
+		{
+			FillGlyphRect(0);
+			FillGlyphRect(8);
+			FillGlyphRect(16);
+			for (int32 Y = 8; Y < 10; ++Y)
+			{
+				for (int32 X = 24; X < 26; ++X)
+				{
+					Pixels[Y * AtlasSize + X] = FColor::White;
+				}
+			}
+		}
 
 		PlatformData->Mips[0].BulkData.Unlock();
 		Texture->UpdateResource();
@@ -98,7 +126,7 @@ namespace
 		if (bPacked)
 		{
 			Data.Common.AlphaChannel = EBMFontChannelContent::Zero;
-			Data.Common.RedChannel = EBMFontChannelContent::Zero;
+			Data.Common.RedChannel = EBMFontChannelContent::Glyph;
 			Data.Common.GreenChannel = EBMFontChannelContent::Glyph;
 			Data.Common.BlueChannel = EBMFontChannelContent::Zero;
 		}
@@ -107,7 +135,11 @@ namespace
 		Page.File = TEXT("atlas.png");
 		Page.Texture = CreateGlyphAtlas(Asset, bPacked);
 
-		const auto AddGlyph = [&Data](const int32 Codepoint, const int32 AtlasX, const int32 Advance)
+		const auto AddGlyph = [&Data](
+			const int32 Codepoint,
+			const int32 AtlasX,
+			const int32 Advance,
+			const int32 Channel = 15)
 		{
 			FBMFontGlyph& Glyph = Data.Glyphs.Add(Codepoint);
 			Glyph.Codepoint = Codepoint;
@@ -117,10 +149,30 @@ namespace
 			Glyph.Height = 10;
 			Glyph.XAdvance = Advance;
 			Glyph.Page = 0;
+			Glyph.Channel = Channel;
 		};
-		AddGlyph(TEXT('A'), 0, 10);
-		AddGlyph(TEXT('V'), 8, 10);
-		AddGlyph(0xFFFD, 16, 6);
+		if (bPacked)
+		{
+			AddGlyph(TEXT('A'), 0, 10, 2);
+			AddGlyph(TEXT('V'), 0, 10, 4);
+			AddGlyph(0xFFFD, 8, 6, 2);
+		}
+		else
+		{
+			AddGlyph(TEXT('A'), 0, 10);
+			AddGlyph(TEXT('V'), 8, 10);
+			AddGlyph(0xFFFD, 16, 6);
+
+			FBMFontGlyph& DotGlyph = Data.Glyphs.Add(TEXT('.'));
+			DotGlyph.Codepoint = TEXT('.');
+			DotGlyph.X = 24;
+			DotGlyph.Y = 8;
+			DotGlyph.Width = 2;
+			DotGlyph.Height = 2;
+			DotGlyph.YOffset = 8;
+			DotGlyph.XAdvance = 2;
+			DotGlyph.Page = 0;
+		}
 
 		FBMFontKerningPair& Pair = Data.KerningPairs.AddDefaulted_GetRef();
 		Pair.First = TEXT('A');
@@ -354,7 +406,7 @@ bool FBMFontRenderPackedAtlasTest::RunTest(const FString& Parameters)
 	}
 
 	UBMFontAsset* Asset = CreateRenderFontAsset(GetTransientPackage(), true);
-	UObject* Resource = Asset->GetPageRenderResource(0);
+	UObject* Resource = Asset->GetPageRenderResource(0, 2);
 	if (!TestNotNull(TEXT("Packed font resolves a render resource"), Resource))
 	{
 		return false;
@@ -378,6 +430,48 @@ bool FBMFontRenderPackedAtlasTest::RunTest(const FString& Parameters)
 	TestTrue(
 		TEXT("Packed material-path rendering matches ground truth"),
 		VerifyAgainstGroundTruth(*this, TEXT("PackedAtlas"), Pixels, Size)
+	);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FBMFontRenderRichTextEllipsisTest,
+	"UnrealBMFont.Render.RichTextEllipsis",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBMFontRenderRichTextEllipsisTest::RunTest(const FString& Parameters)
+{
+	if (IsNullRHI())
+	{
+		AddInfo(TEXT("Render tests require a GPU run without -NullRHI; skipping."));
+		return true;
+	}
+
+	UBMFontAsset* Asset = CreateRenderFontAsset(GetTransientPackage(), false);
+	UBMFontRichTextBlock* RichText = NewObject<UBMFontRichTextBlock>();
+	RichText->SetFontAsset(Asset);
+	RichText->SetText(FText::FromString(TEXT("AVAV")));
+	RichText->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis);
+	RichText->SetClipping(EWidgetClipping::ClipToBounds);
+
+	TSharedRef<SWidget> Widget = SNew(SBox)
+		.WidthOverride(24.0f)
+		.HeightOverride(32.0f)
+		[
+			RichText->TakeWidget()
+		];
+
+	const FIntPoint Size(24, 32);
+	TArray<FColor> Pixels;
+	RenderWidgetPixels(Widget, Size, Pixels);
+	if (!TestEqual(TEXT("Render produced a full pixel buffer"), Pixels.Num(), Size.X * Size.Y))
+	{
+		return false;
+	}
+
+	TestTrue(
+		TEXT("Rich-text ellipsis rendering matches ground truth"),
+		VerifyAgainstGroundTruth(*this, TEXT("RichTextEllipsis"), Pixels, Size)
 	);
 	return true;
 }

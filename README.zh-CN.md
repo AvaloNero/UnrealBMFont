@@ -18,7 +18,8 @@ Unreal BMFont 用于导入 AngelCode BMFont 描述文件，并在 Slate / UMG �
 - 按描述文件中的真实文件名导入纹理，支持多页图集。
 - 保留 Unicode 码点、字形偏移、步进、行高以及 kerning 数据。
 - 提供 `UBMFontAsset`、`UBMFontText`、底层 `SBMFontText`，以及 Rich Text 适配控件 `UBMFontRichTextBlock`。
-- Packed-channel 图集通过通道提取 UI 材质渲染。
+- Packed-channel 图集通过通道提取 UI 材质渲染，并遵循每个字形的 `char.chnl` 掩码。
+- 支持 Rich Text 中的 BMFont run，包括空标签和省略号溢出策略。
 - 支持换行、对齐、边距、行高、字间距、染色、阴影、缺字回退、文本绑定和像素对齐。
 - 支持资产重导入，并保留用户自行修改的纹理过滤方式。
 - 提供编辑器缩略图和带字形框的只读字体/图集检查器。

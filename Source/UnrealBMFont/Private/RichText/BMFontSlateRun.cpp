@@ -7,7 +7,9 @@
 #include "BMFontAsset.h"
 #include "Containers/StringConv.h"
 #include "Framework/Text/DefaultLayoutBlock.h"
+#include "Framework/Text/SlateTextUtils.h"
 #include "Rendering/DrawElements.h"
+#include "Rendering/DrawElementTextOverflowArgs.h"
 
 namespace
 {
@@ -63,7 +65,7 @@ FTextRange FBMFontSlateRun::GetTextRange() const
 void FBMFontSlateRun::SetTextRange(const FTextRange& Value)
 {
 	Range = Value;
-	ItemsGeneration = 0;
+	bItemsDirty = true;
 }
 
 int16 FBMFontSlateRun::GetBaseLine(const float Scale) const
@@ -174,7 +176,7 @@ void FBMFontSlateRun::Move(const TSharedRef<FString>& NewText, const FTextRange&
 {
 	Text = NewText;
 	Range = NewRange;
-	ItemsGeneration = 0;
+	bItemsDirty = true;
 }
 
 TSharedRef<IRun> FBMFontSlateRun::Clone() const
@@ -216,7 +218,7 @@ int32 FBMFontSlateRun::OnPaint(
 {
 	EnsureItems();
 	EnsureBrushes();
-	if (Items.IsEmpty() || GlyphBrushes.IsEmpty())
+	if (Items.IsEmpty())
 	{
 		return LayerId;
 	}
@@ -230,6 +232,162 @@ int32 FBMFontSlateRun::OnPaint(
 
 	const int32 BeginItem = FindItemIndex(BlockRange.BeginIndex);
 	const int32 EndItem = FindItemIndex(BlockRange.EndIndex);
+	const float ContentWidth = MeasureItems(BeginItem, EndItem);
+	const float BlockLocalX = BlockOffset.X * InverseScale;
+	const float WidgetWidth = AllottedGeometry.GetLocalSize().X;
+
+	TArray<FGlyphItem, TInlineAllocator<3>> EllipsisItems;
+	const auto AddEllipsisGlyph = [this, &EllipsisItems, &Style](
+		UBMFontAsset& Font,
+		const int32 Codepoint,
+		const FBMFontGlyph& Glyph)
+	{
+		FGlyphItem& Item = EllipsisItems.AddDefaulted_GetRef();
+		Item.GlyphCodepoint = Codepoint;
+		Item.Glyph = &Glyph;
+		Item.Advance = Glyph.XAdvance * Style.FontScale;
+		if (EllipsisItems.Num() > 1)
+		{
+			Item.KerningBefore = Font.GetKerning(
+				EllipsisItems[EllipsisItems.Num() - 2].GlyphCodepoint,
+				Codepoint
+			) * Style.FontScale;
+		}
+		EnsureGlyphBrush(Font, Codepoint, Glyph);
+	};
+
+	UBMFontAsset* Font = StyleBlock.IsValid() ? StyleBlock->FontAsset.Get() : nullptr;
+	if (Font != nullptr)
+	{
+		if (const FBMFontGlyph* EllipsisGlyph = Font->FontData.Glyphs.Find(0x2026))
+		{
+			AddEllipsisGlyph(*Font, 0x2026, *EllipsisGlyph);
+		}
+		else if (const FBMFontGlyph* DotGlyph = Font->FontData.Glyphs.Find(TEXT('.')))
+		{
+			AddEllipsisGlyph(*Font, TEXT('.'), *DotGlyph);
+			AddEllipsisGlyph(*Font, TEXT('.'), *DotGlyph);
+			AddEllipsisGlyph(*Font, TEXT('.'), *DotGlyph);
+		}
+		else if (const FBMFontGlyph* FallbackGlyph = Font->FontData.Glyphs.Find(Style.FallbackCodepoint))
+		{
+			AddEllipsisGlyph(*Font, Style.FallbackCodepoint, *FallbackGlyph);
+		}
+	}
+
+	const auto MeasureEllipsis = [&EllipsisItems, &Style]()
+	{
+		float Width = 0.0f;
+		for (int32 Index = 0; Index < EllipsisItems.Num(); ++Index)
+		{
+			if (Index > 0)
+			{
+				Width += Style.LetterSpacing + EllipsisItems[Index].KerningBefore;
+			}
+			Width += EllipsisItems[Index].Advance;
+		}
+		return Width;
+	};
+
+	const float EllipsisWidth = MeasureEllipsis();
+	const bool bUsesEllipsis = SlateTextUtils::IsEllipsisPolicy(TextArgs.OverflowPolicy)
+		&& TextArgs.OverflowDirection != ETextOverflowDirection::NoOverflow
+		&& TextArgs.bIsLastVisibleBlock;
+	const bool bOverflows = TextArgs.OverflowDirection == ETextOverflowDirection::LeftToRight
+		? BlockLocalX + ContentWidth > WidgetWidth + KINDA_SMALL_NUMBER
+		: BlockLocalX < -KINDA_SMALL_NUMBER;
+	const bool bPaintEllipsis = bUsesEllipsis && (bOverflows || TextArgs.bIsNextBlockClipped);
+
+	int32 PrefixEndItem = EndItem;
+	int32 SuffixBeginItem = EndItem;
+	float PrefixX = 0.0f;
+	float PrefixWidth = ContentWidth;
+	float SuffixX = 0.0f;
+	float SuffixWidth = 0.0f;
+	float EllipsisX = 0.0f;
+
+	const auto FitPrefix = [this, &Style](
+		const int32 FirstItem,
+		const int32 LastItem,
+		const float WidthBudget,
+		int32& OutEndItem,
+		float& OutWidth)
+	{
+		OutEndItem = FirstItem;
+		OutWidth = 0.0f;
+		for (int32 Index = FirstItem; Index < LastItem; ++Index)
+		{
+			const float Leading = Index > FirstItem ? Style.LetterSpacing + Items[Index].KerningBefore : 0.0f;
+			const float CandidateWidth = OutWidth + Leading + Items[Index].Advance;
+			if (CandidateWidth > WidthBudget + KINDA_SMALL_NUMBER)
+			{
+				break;
+			}
+			OutWidth = CandidateWidth;
+			OutEndItem = Index + 1;
+		}
+	};
+
+	const auto FitSuffix = [this, &Style](
+		const int32 FirstItem,
+		const int32 LastItem,
+		const float WidthBudget,
+		int32& OutBeginItem,
+		float& OutWidth)
+	{
+		OutBeginItem = LastItem;
+		OutWidth = 0.0f;
+		for (int32 Index = LastItem - 1; Index >= FirstItem; --Index)
+		{
+			const float Trailing = Index + 1 < LastItem
+				? Style.LetterSpacing + Items[Index + 1].KerningBefore
+				: 0.0f;
+			const float CandidateWidth = Items[Index].Advance + Trailing + OutWidth;
+			if (CandidateWidth > WidthBudget + KINDA_SMALL_NUMBER)
+			{
+				break;
+			}
+			OutWidth = CandidateWidth;
+			OutBeginItem = Index;
+		}
+	};
+
+	if (bPaintEllipsis)
+	{
+		const float VisibleLeft = FMath::Max(0.0f, -BlockLocalX);
+		const float VisibleRight = FMath::Max(VisibleLeft, WidgetWidth - BlockLocalX);
+		const float AvailableWidth = FMath::Max(0.0f, VisibleRight - VisibleLeft);
+		const float ContentBudget = FMath::Max(0.0f, AvailableWidth - EllipsisWidth);
+
+		if (TextArgs.OverflowPolicy == ETextOverflowPolicy::MiddleEllipsis)
+		{
+			FitPrefix(BeginItem, EndItem, ContentBudget * 0.5f, PrefixEndItem, PrefixWidth);
+			FitSuffix(PrefixEndItem, EndItem, ContentBudget - PrefixWidth, SuffixBeginItem, SuffixWidth);
+			PrefixX = VisibleLeft;
+			EllipsisX = PrefixX + PrefixWidth;
+			SuffixX = EllipsisX + EllipsisWidth;
+		}
+		else if (TextArgs.OverflowDirection == ETextOverflowDirection::RightToLeft)
+		{
+			PrefixEndItem = BeginItem;
+			PrefixWidth = 0.0f;
+			FitSuffix(BeginItem, EndItem, ContentBudget, SuffixBeginItem, SuffixWidth);
+			SuffixX = VisibleRight - SuffixWidth;
+			EllipsisX = SuffixX - EllipsisWidth;
+		}
+		else
+		{
+			SuffixBeginItem = EndItem;
+			FitPrefix(BeginItem, EndItem, ContentBudget, PrefixEndItem, PrefixWidth);
+			PrefixX = VisibleLeft;
+			EllipsisX = PrefixX + PrefixWidth;
+		}
+	}
+
+	if (GlyphBrushes.IsEmpty())
+	{
+		return LayerId;
+	}
 
 	const ESlateDrawEffect DrawEffects = bParentEnabled
 		? ESlateDrawEffect::None
@@ -242,15 +400,8 @@ int32 FBMFontSlateRun::OnPaint(
 			return;
 		}
 
-		float PenX = 0.0f;
-		for (int32 Index = BeginItem; Index < EndItem; ++Index)
+		const auto PaintGlyph = [&](const FGlyphItem& Item, const float PenX)
 		{
-			const FGlyphItem& Item = Items[Index];
-			if (Index > BeginItem)
-			{
-				PenX += Style.LetterSpacing + Item.KerningBefore;
-			}
-
 			if (Item.Glyph != nullptr && Item.Glyph->Width > 0 && Item.Glyph->Height > 0)
 			{
 				if (const FSlateBrush* Brush = GlyphBrushes.Find(Item.GlyphCodepoint))
@@ -275,7 +426,38 @@ int32 FBMFontSlateRun::OnPaint(
 					}
 				}
 			}
-			PenX += Item.Advance;
+		};
+
+		const auto PaintRange = [&](const int32 FirstItem, const int32 LastItem, const float StartX)
+		{
+			float PenX = StartX;
+			for (int32 Index = FirstItem; Index < LastItem; ++Index)
+			{
+				const FGlyphItem& Item = Items[Index];
+				if (Index > FirstItem)
+				{
+					PenX += Style.LetterSpacing + Item.KerningBefore;
+				}
+				PaintGlyph(Item, PenX);
+				PenX += Item.Advance;
+			}
+		};
+
+		PaintRange(BeginItem, PrefixEndItem, PrefixX);
+		if (bPaintEllipsis)
+		{
+			float PenX = EllipsisX;
+			for (int32 Index = 0; Index < EllipsisItems.Num(); ++Index)
+			{
+				const FGlyphItem& Item = EllipsisItems[Index];
+				if (Index > 0)
+				{
+					PenX += Style.LetterSpacing + Item.KerningBefore;
+				}
+				PaintGlyph(Item, PenX);
+				PenX += Item.Advance;
+			}
+			PaintRange(SuffixBeginItem, EndItem, SuffixX);
 		}
 	};
 
@@ -308,14 +490,16 @@ void FBMFontSlateRun::EnsureItems() const
 	UBMFontAsset* Font = StyleBlock.IsValid() ? StyleBlock->FontAsset.Get() : nullptr;
 	const uint32 CurrentRevision = Font != nullptr ? Font->GetDataRevision() : 0;
 	const uint32 CurrentGeneration = StyleBlock.IsValid() ? StyleBlock->Generation : 0;
-	if (ItemsGeneration == CurrentGeneration && ItemsDataRevision == CurrentRevision && !Items.IsEmpty())
+	if (!bItemsDirty && ItemsGeneration == CurrentGeneration && ItemsDataRevision == CurrentRevision)
 	{
 		return;
 	}
 
 	Items.Reset();
+	bItemsDirty = false;
 	ItemsGeneration = CurrentGeneration;
 	ItemsDataRevision = CurrentRevision;
+	++ItemsRevision;
 	if (Font == nullptr || !Font->FontData.IsValid())
 	{
 		return;
@@ -382,35 +566,57 @@ void FBMFontSlateRun::EnsureItems() const
 
 void FBMFontSlateRun::EnsureBrushes() const
 {
+	EnsureItems();
 	UBMFontAsset* Font = StyleBlock.IsValid() ? StyleBlock->FontAsset.Get() : nullptr;
 	const uint32 CurrentRevision = Font != nullptr ? Font->GetDataRevision() : 0;
-	if (BrushFontAsset.Get() == Font && BrushDataRevision == CurrentRevision && !GlyphBrushes.IsEmpty())
+	const bool bFontCacheChanged = BrushFontAsset.Get() != Font || BrushDataRevision != CurrentRevision;
+	if (!bFontCacheChanged && BrushItemsRevision == ItemsRevision)
 	{
 		return;
 	}
 
-	GlyphBrushes.Reset();
-	BrushFontAsset = Font;
-	BrushDataRevision = CurrentRevision;
+	if (bFontCacheChanged)
+	{
+		GlyphBrushes.Reset();
+		BrushFontAsset = Font;
+		BrushDataRevision = CurrentRevision;
+	}
+	BrushItemsRevision = ItemsRevision;
 	if (Font == nullptr || !Font->FontData.IsValid())
 	{
 		return;
 	}
 
-	for (const TPair<int32, FBMFontGlyph>& Entry : Font->FontData.Glyphs)
+	for (const FGlyphItem& Item : Items)
 	{
-		UObject* Resource = Font->GetPageRenderResource(Entry.Value.Page);
-		if (Resource == nullptr)
+		if (Item.Glyph != nullptr)
 		{
-			continue;
+			EnsureGlyphBrush(*Font, Item.GlyphCodepoint, *Item.Glyph);
 		}
-
-		FSlateBrush& Brush = GlyphBrushes.Add(Entry.Key);
-		Brush.DrawAs = ESlateBrushDrawType::Image;
-		Brush.SetResourceObject(Resource);
-		Brush.SetImageSize(FVector2D(Entry.Value.Width, Entry.Value.Height));
-		Brush.SetUVRegion(Entry.Value.GetUvRegion(Font->FontData.Common));
 	}
+}
+
+void FBMFontSlateRun::EnsureGlyphBrush(
+	UBMFontAsset& Font,
+	const int32 GlyphCodepoint,
+	const FBMFontGlyph& Glyph) const
+{
+	if (GlyphBrushes.Contains(GlyphCodepoint))
+	{
+		return;
+	}
+
+	UObject* Resource = Font.GetPageRenderResource(Glyph.Page, Glyph.Channel);
+	if (Resource == nullptr)
+	{
+		return;
+	}
+
+	FSlateBrush& Brush = GlyphBrushes.Add(GlyphCodepoint);
+	Brush.DrawAs = ESlateBrushDrawType::Image;
+	Brush.SetResourceObject(Resource);
+	Brush.SetImageSize(FVector2D(Glyph.Width, Glyph.Height));
+	Brush.SetUVRegion(Glyph.GetUvRegion(Font.FontData.Common));
 }
 
 int32 FBMFontSlateRun::FindItemIndex(const int32 TextIndex) const

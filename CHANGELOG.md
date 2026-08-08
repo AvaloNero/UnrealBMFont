@@ -6,18 +6,19 @@ All notable changes to Unreal BMFont are documented here. The project follows [S
 
 ### Added
 
-- Channel-aware rendering for packed-channel (`packed=1`) atlases: each page renders through a per-page dynamic instance of the bundled `M_BMFontPacked` UI material, with coverage extracted per the descriptor's channel metadata. The asset's **Packed Render Material** property overrides the material per asset.
-- Packed descriptors now import instead of being rejected; packed page textures default to sRGB disabled, and reimport onto an sRGB-enabled texture warns.
-- `UBMFontRichTextBlock`, a rich text adapter that renders tagged (and optionally plain) runs with a BMFont asset while leaving the plain-text core untouched. Kerning resolves within each run.
+- Channel-aware rendering for packed-channel (`packed=1`) atlases: glyphs sharing a page can select independent `char.chnl` masks through cached instances of the bundled `M_BMFontPacked` UI material. The asset's **Packed Render Material** property overrides the material per asset.
+- Packed descriptor import with sRGB-disabled page textures and a warning when reimport preserves an sRGB-enabled texture.
+- `UBMFontRichTextBlock`, a rich text adapter that renders tagged (and optionally plain) runs with a BMFont asset. Kerning resolves within each run, empty tags stay empty, and ellipsis overflow policies are rendered with asset glyphs.
 - Editor thumbnails for BMFont assets, drawn from the first atlas page.
 - A read-only font/atlas inspector (double-click an asset) with a descriptor summary, an atlas preview with glyph rectangles and click-to-select, and a glyph table.
-- Screenshot-based render tests (`UnrealBMFont.Render.*`) that draw `SBMFontText` off-screen and compare against committed ground truth, including the packed material path. They skip cleanly under NullRHI; ground truth regenerates with `-UpdateBMFontGroundTruth`.
+- Screenshot-based render tests (`UnrealBMFont.Render.*`) that draw widgets off-screen and compare against committed ground truth, including per-glyph packed channels and rich-text ellipsis. They skip cleanly under NullRHI; ground truth regenerates with `-UpdateBMFontGroundTruth`.
 - `TestPlugin.ps1 -DisableNullRHI` for GPU runs.
 
 ### Changed
 
 - The plugin descriptor now allows content (`CanContainContent`) to ship `M_BMFontPacked`.
-- The packed-channel parse warning now reflects material-path rendering.
+- Rich-text brush caches are scoped to glyphs used by each run and refreshed by asset revision.
+- The asset inspector refreshes its summary, pages, atlas, and glyph rows after successful reimport.
 
 ## [0.1.0] - 2026-08-05
 

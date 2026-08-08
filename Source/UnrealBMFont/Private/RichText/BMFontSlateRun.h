@@ -126,6 +126,7 @@ private:
 
 	void EnsureItems() const;
 	void EnsureBrushes() const;
+	void EnsureGlyphBrush(UBMFontAsset& Font, int32 GlyphCodepoint, const FBMFontGlyph& Glyph) const;
 
 	/** First item whose TextStart is not before TextIndex, or Items.Num(). */
 	int32 FindItemIndex(int32 TextIndex) const;
@@ -140,10 +141,13 @@ private:
 
 	mutable uint32 ItemsGeneration = 0;
 	mutable uint32 ItemsDataRevision = 0;
+	mutable uint32 ItemsRevision = 0;
+	mutable bool bItemsDirty = true;
 	mutable TArray<FGlyphItem> Items;
 
 	mutable TWeakObjectPtr<UBMFontAsset> BrushFontAsset;
 	mutable uint32 BrushDataRevision = 0;
+	mutable uint32 BrushItemsRevision = MAX_uint32;
 	mutable TMap<int32, FSlateBrush> GlyphBrushes;
 };
 

@@ -18,10 +18,17 @@ struct UNREALBMFONT_API FBMFontPackedChannelMapping
 namespace BMFontRendering
 {
 	/**
-	 * Computes channel extraction parameters from a descriptor's common record.
-	 * Non-packed descriptors always sample alpha as coverage. Packed descriptors sample
-	 * channels marked Glyph or GlyphAndOutline; a constant-one coverage channel becomes
-	 * ConstantBias, and unknown metadata falls back to alpha sampling.
+	 * Computes channel extraction parameters from a descriptor's common record and one
+	 * glyph's char.chnl mask. Non-packed descriptors always sample alpha as coverage.
+	 * Packed descriptors select one channel from the glyph mask, using the common record
+	 * to prefer channels that carry Glyph or GlyphAndOutline data. Unknown or conflicting
+	 * metadata falls back to sampling the channel selected by the glyph.
 	 */
-	UNREALBMFONT_API FBMFontPackedChannelMapping ComputePackedChannelMapping(const FBMFontCommon& Common);
+	UNREALBMFONT_API FBMFontPackedChannelMapping ComputePackedChannelMapping(
+		const FBMFontCommon& Common,
+		int32 GlyphChannel = 15
+	);
+
+	/** Object path of the plugin's default packed-channel UI material. */
+	UNREALBMFONT_API const TCHAR* GetDefaultPackedMaterialPath();
 }

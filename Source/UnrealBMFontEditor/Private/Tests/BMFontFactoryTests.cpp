@@ -5,6 +5,8 @@
 #include "BMFontFactory.h"
 
 #include "AssetEditor/SBMFontAtlasPreview.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "BMFontAsset.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Engine/Texture2D.h"
@@ -16,7 +18,9 @@
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
+#include "ObjectTools.h"
 #include "UObject/Package.h"
+#include "UObject/SavePackage.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FBMFontFactoryImportAndReimportTest,
@@ -365,6 +369,12 @@ bool FBMFontFactoryPackedImportTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("Packed sample glyph count"), SampleAsset->FontData.Glyphs.Num(), 3);
 	TestTrue(TEXT("Packed sample keeps the packed flag"), SampleAsset->FontData.Common.bPacked);
+	const FBMFontGlyph* SampleGlyph = SampleAsset->FindGlyph(TEXT('A'));
+	TestEqual(
+		TEXT("Packed sample selects its declared green channel"),
+		SampleGlyph != nullptr ? SampleGlyph->Channel : INDEX_NONE,
+		2
+	);
 	return true;
 }
 
@@ -416,6 +426,122 @@ bool FBMFontAtlasPreviewSmokeTest::RunTest(const FString& Parameters)
 	Preview->SetSelectedCodepoint(65);
 	Preview->SlatePrepass(1.0f);
 	TestEqual(TEXT("Selection callback does not fire without input"), SelectedCodepoint, INDEX_NONE);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FBMFontFactoryRealPackageSaveTest,
+	"UnrealBMFont.Editor.PackedRealPackageSave",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBMFontFactoryRealPackageSaveTest::RunTest(const FString& Parameters)
+{
+	// A saved, non-transient package exercises the async texture derived-data path and
+	// the asset registry, neither of which transient-package imports touch.
+	const FString UniqueId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	const FString TempDirectory = FPaths::Combine(
+		FPaths::ProjectIntermediateDir(),
+		TEXT("UnrealBMFontTests"),
+		UniqueId
+	);
+	TestTrue(TEXT("Temporary source directory can be created"), IFileManager::Get().MakeDirectory(*TempDirectory, true));
+	ON_SCOPE_EXIT
+	{
+		IFileManager::Get().DeleteDirectory(*TempDirectory, false, true);
+	};
+
+	const FString AtlasFilename = FPaths::Combine(TempDirectory, TEXT("packed-atlas.png"));
+	{
+		TArray<FColor> Pixels;
+		Pixels.Init(FColor::White, 16);
+		TArray<uint8> PngBytes;
+		FImageUtils::ThumbnailCompressImageArray(4, 4, Pixels, PngBytes);
+		if (!TestTrue(TEXT("Packed PNG fixture can be written"), FFileHelper::SaveArrayToFile(PngBytes, *AtlasFilename)))
+		{
+			return false;
+		}
+	}
+
+	const FString DescriptorFilename = FPaths::Combine(TempDirectory, TEXT("packed-save.fnt"));
+	const FString Descriptor =
+		FString(TEXT("info face=\"Packed Save\" size=4 unicode=1 smooth=0 padding=0,0,0,0 spacing=0,0\n"))
+		+ TEXT("common lineHeight=4 base=4 scaleW=4 scaleH=4 pages=1 packed=1 alphaChnl=3 redChnl=0 greenChnl=3 blueChnl=3\n")
+		+ TEXT("page id=0 file=\"packed-atlas.png\"\n")
+		+ TEXT("chars count=1\n")
+		+ TEXT("char id=65 x=0 y=0 width=4 height=4 xoffset=0 yoffset=0 xadvance=4 page=0 chnl=4\n");
+	if (!TestTrue(
+		TEXT("Packed descriptor fixture can be written"),
+		FFileHelper::SaveStringToFile(Descriptor, *DescriptorFilename, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)))
+	{
+		return false;
+	}
+
+	const FString AssetName = FString::Printf(TEXT("PackedSave_%s"), *UniqueId);
+	const FString ContentDirectory = FPaths::Combine(FPaths::ProjectContentDir(), TEXT("UnrealBMFontTestArtifacts"));
+	const FString PackageFilename = FPaths::Combine(ContentDirectory, AssetName + TEXT(".uasset"));
+	const FString PackageName = FString::Printf(TEXT("/Game/UnrealBMFontTestArtifacts/%s"), *AssetName);
+
+	AddExpectedMessage(
+		TEXT("The descriptor uses packed texture channels"),
+		ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains,
+		1,
+		false
+	);
+
+	UPackage* Package = CreatePackage(*PackageName);
+	UBMFontFactory* Factory = NewObject<UBMFontFactory>();
+	bool bOperationCanceled = false;
+	UBMFontAsset* Asset = Cast<UBMFontAsset>(Factory->FactoryCreateFile(
+		UBMFontAsset::StaticClass(),
+		Package,
+		*AssetName,
+		RF_Public | RF_Standalone,
+		DescriptorFilename,
+		TEXT(""),
+		GWarn,
+		bOperationCanceled
+	));
+	if (!TestNotNull(TEXT("Factory imports into a real package"), Asset))
+	{
+		return false;
+	}
+	TestFalse(TEXT("Fresh import disables sRGB on the packed page"), Asset->GetPageTexture(0)->SRGB);
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	const bool bSaved = UPackage::SavePackage(Package, Asset, *PackageFilename, SaveArgs);
+	if (!TestTrue(TEXT("Packed asset saves to disk"), bSaved && FPaths::FileExists(PackageFilename)))
+	{
+		return false;
+	}
+
+	// The packed material reference must reach the asset registry on save, or cooks will
+	// never include it (a CDO default is delta-serialized away and never lands here).
+	IAssetRegistry::Get()->ScanPathsSynchronous({ TEXT("/Game/UnrealBMFontTestArtifacts") }, true);
+	TArray<FName> Dependencies;
+	IAssetRegistry::Get()->GetDependencies(
+		FName(*PackageName),
+		Dependencies,
+		UE::AssetRegistry::EDependencyCategory::Package
+	);
+	const bool bHasMaterialDependency = Dependencies.ContainsByPredicate(
+		[](const FName& Dependency)
+		{
+			return Dependency.ToString().Contains(TEXT("/UnrealBMFont/M_BMFontPacked"));
+		}
+	);
+	TestTrue(TEXT("Saved asset references the default packed material"), bHasMaterialDependency);
+
+	// Clean up the on-disk artifact so repeated runs stay independent.
+	const FAssetData AssetData = IAssetRegistry::Get()->GetAssetByObjectPath(
+		FSoftObjectPath(PackageName + TEXT(".") + AssetName)
+	);
+	if (AssetData.IsValid())
+	{
+		ObjectTools::DeleteAssets({ AssetData }, false);
+	}
+	IFileManager::Get().DeleteDirectory(*FPaths::GetPath(PackageFilename), false, true);
 	return true;
 }
 

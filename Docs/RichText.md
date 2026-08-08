@@ -22,6 +22,8 @@ The tag name defaults to `bmfont` and can be changed with **Decorator Tag**.
 - Run metrics come from the asset: line height from `common.lineHeight`, scaled by **Font Scale**. Runs anchor to the line top; on lines shared with taller font runs, the BMFont run bottom-aligns within the line.
 - Tint and shadow come from the widget's own appearance properties, not from the rich text style set. A named style from the style set table is not consulted for BMFont runs.
 - Packed-channel assets render through the same channel-extraction material as the plain-text widget.
+- Ellipsis, multiline ellipsis, and middle ellipsis policies use `U+2026` when the asset contains it, otherwise three period glyphs, then the configured fallback glyph. End ellipsis follows the line's overflow direction; the renderer's broader bidirectional-layout limitation still applies.
+- Empty paired tags and self-closing matching tags produce empty BMFont runs; their markup is never painted as text.
 - Widget property setters (font asset, scale, spacing, colors) apply immediately by rebuilding the affected runs; the markup is not re-tokenized by callers.
 - Reimporting the assigned asset bumps its data revision, which runs observe on the next layout invalidate; measured positions then refresh without any text change.
 - The adapter inherits the core renderer's scope: left-to-right layout without bidirectional reordering, OpenType shaping, ligatures, or combining-mark positioning.

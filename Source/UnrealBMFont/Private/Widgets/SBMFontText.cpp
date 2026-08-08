@@ -370,7 +370,7 @@ void SBMFontText::EnsureBrushes() const
 
 	for (const TPair<int32, FBMFontGlyph>& Entry : Font->FontData.Glyphs)
 	{
-		UObject* Resource = Font->GetPageRenderResource(Entry.Value.Page);
+		UObject* Resource = Font->GetPageRenderResource(Entry.Value.Page, Entry.Value.Channel);
 		if (Resource == nullptr)
 		{
 			continue;
