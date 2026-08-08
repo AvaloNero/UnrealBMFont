@@ -3,7 +3,6 @@
 #include "Widgets/BMFontRichTextBlock.h"
 
 #include "BMFontAsset.h"
-#include "Framework/Application/SlateApplication.h"
 #include "RichText/BMFontTextDecorator.h"
 #include "Widgets/Text/SRichTextBlock.h"
 
@@ -187,21 +186,12 @@ void UBMFontRichTextBlock::UpdateDecoratorMatching()
 
 void UBMFontRichTextBlock::RefreshRuns()
 {
-	if (!MyRichTextBlock.IsValid())
+	if (MyRichTextBlock.IsValid())
 	{
-		return;
+		// DirtyContent + layout invalidate forces a re-marshal; new runs pick up the
+		// decorator configuration. No text churn or synchronous prepass required.
+		MyRichTextBlock->Refresh();
 	}
-
-	// Matching-rule changes alter which runs get claimed, which only happens during a
-	// re-marshal. SRichTextBlock and the layout both early-out on identical text, so
-	// force the change through an intermediate clear observed by a prepass.
-	const FText CurrentText = GetText();
-	MyRichTextBlock->SetText(FText::GetEmpty());
-	if (FSlateApplication::IsInitialized())
-	{
-		MyRichTextBlock->SlatePrepass(FSlateApplication::Get().GetApplicationScale());
-	}
-	MyRichTextBlock->SetText(CurrentText);
 }
 
 #undef LOCTEXT_NAMESPACE

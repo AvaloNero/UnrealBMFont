@@ -52,10 +52,11 @@ public:
 	UTexture2D* GetPageTexture(int32 PageId) const;
 
 	/**
-	 * Returns the Slate brush resource for a page: the page texture itself, or a cached
-	 * channel-extraction material instance when the descriptor uses packed channels.
+	 * Returns the Slate brush resource for a page and glyph channel: the page texture
+	 * itself, or a cached channel-extraction material instance when the descriptor uses
+	 * packed channels.
 	 */
-	UObject* GetPageRenderResource(int32 PageId);
+	UObject* GetPageRenderResource(int32 PageId, int32 GlyphChannel = 15);
 
 	const FBMFontGlyph* FindGlyph(int32 Codepoint) const;
 	const FBMFontPage* FindPage(int32 PageId) const;
@@ -79,8 +80,8 @@ private:
 	uint32 DataRevision = 1;
 
 	UPROPERTY(Transient)
-	TMap<int32, TObjectPtr<UMaterialInstanceDynamic>> PageMaterialCache;
+	TMap<uint64, TObjectPtr<UMaterialInstanceDynamic>> PageMaterialCache;
 
-	TMap<int32, TWeakObjectPtr<UTexture2D>> PageMaterialSources;
+	TMap<uint64, TWeakObjectPtr<UTexture2D>> PageMaterialSources;
 	bool bWarnedMissingPackedMaterial = false;
 };

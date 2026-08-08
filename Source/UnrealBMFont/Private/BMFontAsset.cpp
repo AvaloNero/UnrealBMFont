@@ -11,11 +11,20 @@
 #include "EditorFramework/AssetImportData.h"
 #endif
 
+namespace
+{
+	uint64 MakePageMaterialKey(const int32 PageId, const int32 GlyphChannel)
+	{
+		return (static_cast<uint64>(static_cast<uint32>(PageId)) << 32)
+			| static_cast<uint32>(GlyphChannel & 0x0F);
+	}
+}
+
 UBMFontAsset::UBMFontAsset()
 {
-	PackedRenderMaterial = TSoftObjectPtr<UMaterialInterface>(
-		FSoftObjectPath(TEXT("/UnrealBMFont/M_BMFontPacked.M_BMFontPacked"))
-	);
+	// Deliberately empty: a CDO-default soft reference is delta-serialized away on save,
+	// so it never reaches the asset registry and the material would not cook. The factory
+	// assigns the default path at import; GetPageRenderResource falls back to it at runtime.
 #if WITH_EDITORONLY_DATA
 	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
@@ -60,7 +69,7 @@ UTexture2D* UBMFontAsset::GetPageTexture(const int32 PageId) const
 	return nullptr;
 }
 
-UObject* UBMFontAsset::GetPageRenderResource(const int32 PageId)
+UObject* UBMFontAsset::GetPageRenderResource(const int32 PageId, const int32 GlyphChannel)
 {
 	const FBMFontPage* Page = FindPage(PageId);
 	if (Page == nullptr || Page->Texture == nullptr)
@@ -72,15 +81,18 @@ UObject* UBMFontAsset::GetPageRenderResource(const int32 PageId)
 		return Page->Texture;
 	}
 
-	if (const TObjectPtr<UMaterialInstanceDynamic>* Cached = PageMaterialCache.Find(PageId))
+	const uint64 MaterialKey = MakePageMaterialKey(PageId, GlyphChannel);
+	if (const TObjectPtr<UMaterialInstanceDynamic>* Cached = PageMaterialCache.Find(MaterialKey))
 	{
-		if (*Cached != nullptr && PageMaterialSources.FindRef(PageId).Get() == Page->Texture)
+		if (*Cached != nullptr && PageMaterialSources.FindRef(MaterialKey).Get() == Page->Texture)
 		{
 			return *Cached;
 		}
 	}
 
-	UMaterialInterface* BaseMaterial = PackedRenderMaterial.LoadSynchronous();
+	UMaterialInterface* BaseMaterial = PackedRenderMaterial.IsNull()
+		? LoadObject<UMaterialInterface>(nullptr, BMFontRendering::GetDefaultPackedMaterialPath())
+		: PackedRenderMaterial.LoadSynchronous();
 	if (BaseMaterial == nullptr)
 	{
 		if (!bWarnedMissingPackedMaterial)
@@ -98,13 +110,16 @@ UObject* UBMFontAsset::GetPageRenderResource(const int32 PageId)
 	}
 
 	UMaterialInstanceDynamic* MaterialInstance = UMaterialInstanceDynamic::Create(BaseMaterial, this);
-	const FBMFontPackedChannelMapping Mapping = BMFontRendering::ComputePackedChannelMapping(FontData.Common);
+	const FBMFontPackedChannelMapping Mapping = BMFontRendering::ComputePackedChannelMapping(
+		FontData.Common,
+		GlyphChannel
+	);
 	MaterialInstance->SetTextureParameterValue(TEXT("FontAtlas"), Page->Texture);
 	MaterialInstance->SetVectorParameterValue(TEXT("ChannelWeights"), Mapping.ChannelWeights);
 	MaterialInstance->SetScalarParameterValue(TEXT("ChannelBias"), Mapping.ConstantBias);
 
-	PageMaterialCache.Add(PageId, MaterialInstance);
-	PageMaterialSources.Add(PageId, Page->Texture);
+	PageMaterialCache.Add(MaterialKey, MaterialInstance);
+	PageMaterialSources.Add(MaterialKey, Page->Texture);
 	return MaterialInstance;
 }
 

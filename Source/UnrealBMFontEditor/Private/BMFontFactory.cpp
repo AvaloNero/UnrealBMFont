@@ -4,6 +4,7 @@
 
 #include "BMFontAsset.h"
 #include "BMFontParser.h"
+#include "BMFontRendering.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Engine/Texture2D.h"
 #include "Factories/TextureFactory.h"
@@ -17,6 +18,61 @@
 
 namespace
 {
+	/** Deep snapshot of an existing page texture's source, used to roll back a failed reimport. */
+	struct FPageTextureBackup
+	{
+		UTexture2D* Texture = nullptr;
+		int32 SizeX = 0;
+		int32 SizeY = 0;
+		int32 NumMips = 0;
+		ETextureSourceFormat Format = TSF_Invalid;
+		TArray<TArray64<uint8>> MipData;
+
+		bool Capture(UTexture2D* InTexture)
+		{
+			if (InTexture == nullptr)
+			{
+				return false;
+			}
+			FTextureSource& Source = InTexture->Source;
+			Texture = InTexture;
+			SizeX = Source.GetSizeX();
+			SizeY = Source.GetSizeY();
+			NumMips = Source.GetNumMips();
+			Format = Source.GetFormat();
+			MipData.SetNum(NumMips);
+			for (int32 MipIndex = 0; MipIndex < NumMips; ++MipIndex)
+			{
+				if (!Source.GetMipData(MipData[MipIndex], 0, 0, MipIndex))
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+
+		void Restore() const
+		{
+			if (Texture == nullptr)
+			{
+				return;
+			}
+			Texture->Modify();
+			Texture->Source.Init(SizeX, SizeY, 1, NumMips, Format, nullptr);
+			for (int32 MipIndex = 0; MipIndex < NumMips; ++MipIndex)
+			{
+				uint8* DestMip = Texture->Source.LockMip(0, 0, MipIndex);
+				if (DestMip != nullptr && MipData.IsValidIndex(MipIndex))
+				{
+					const TArray64<uint8>& Bytes = MipData[MipIndex];
+					FMemory::Memcpy(DestMip, Bytes.GetData(), Bytes.Num());
+				}
+				Texture->Source.UnlockMip(0, 0, MipIndex);
+			}
+			Texture->PostEditChange();
+		}
+	};
+
 	void ReportParseMessages(const FBMFontParseResult& ParseResult)
 	{
 		for (const FBMFontParseMessage& Message : ParseResult.Messages)
@@ -123,6 +179,13 @@ namespace
 	{
 		UTextureFactory::SuppressImportOverwriteDialog(false);
 		UTextureFactory* TextureFactory = NewObject<UTextureFactory>();
+		if (bPackedPage)
+		{
+			// Packed channels encode glyph coverage, not display color. Force linear BEFORE
+			// the factory builds the texture source; flipping SRGB after FactoryCreateFile
+			// races the async derived-data build and can trip its gamma-space assertion.
+			TextureFactory->ColorSpaceMode = ETextureSourceColorSpace::Linear;
+		}
 		UObject* ImportedObject = TextureFactory->FactoryCreateFile(
 			UTexture2D::StaticClass(),
 			Parent,
@@ -141,11 +204,6 @@ namespace
 			Texture->MipGenSettings = TMGS_NoMipmaps;
 			Texture->NeverStream = true;
 			Texture->Filter = TF_Bilinear;
-			if (bPackedPage)
-			{
-				// Packed channels encode glyph coverage, not display color; sRGB decode would distort it.
-				Texture->SRGB = false;
-			}
 			Texture->PostEditChange();
 		}
 		return Texture;
@@ -294,6 +352,15 @@ UBMFontAsset* UBMFontFactory::ImportFromFile(
 		}
 	}
 
+	TArray<FPageTextureBackup> TextureBackups;
+	const auto RestoreTextureBackups = [&TextureBackups]()
+	{
+		for (const FPageTextureBackup& Backup : TextureBackups)
+		{
+			Backup.Restore();
+		}
+	};
+
 	for (FBMFontPage& Page : ParseResult.Data.Pages)
 	{
 		const FString* PageFilename = PageFiles.Find(Page.Id);
@@ -320,6 +387,24 @@ UBMFontAsset* UBMFontFactory::ImportFromFile(
 				FString::Printf(TEXT("%s_Page_%d"), *InName.ToString(), Page.Id)
 			));
 
+		// Overwriting an existing texture is destructive; snapshot its source first so a
+		// later page failure can roll back instead of leaving mixed texture/glyph state.
+		if (ExistingTexture != nullptr)
+		{
+			FPageTextureBackup& Backup = TextureBackups.AddDefaulted_GetRef();
+			if (!Backup.Capture(ExistingTexture))
+			{
+				TextureBackups.Reset();
+				UE_LOG(
+					LogUnrealBMFont,
+					Error,
+					TEXT("Failed to snapshot BMFont page texture %s before reimport; aborting to keep the asset consistent."),
+					*ExistingTexture->GetName()
+				);
+				return nullptr;
+			}
+		}
+
 		const EObjectFlags TextureFlags = static_cast<EObjectFlags>(
 			(Flags & (RF_Public | RF_Standalone | RF_Transient)) | RF_Transactional
 		);
@@ -335,6 +420,7 @@ UBMFontAsset* UBMFontFactory::ImportFromFile(
 		);
 		if (bOutOperationCanceled || Page.Texture == nullptr)
 		{
+			RestoreTextureBackups();
 			UE_LOG(LogUnrealBMFont, Error, TEXT("Failed to import BMFont page texture: %s"), **PageFilename);
 			return nullptr;
 		}
@@ -356,6 +442,14 @@ UBMFontAsset* UBMFontFactory::ImportFromFile(
 		Asset->AssetImportData = NewObject<UAssetImportData>(Asset, TEXT("AssetImportData"));
 	}
 	Asset->AssetImportData->Update(Filename);
+	if (Asset->PackedRenderMaterial.IsNull())
+	{
+		// Serialize the default material path so the reference enters the asset registry;
+		// a CDO-default value would be delta-serialized away and never cook.
+		Asset->PackedRenderMaterial = TSoftObjectPtr<UMaterialInterface>(
+			FSoftObjectPath(BMFontRendering::GetDefaultPackedMaterialPath())
+		);
+	}
 	Asset->SetFontData(MoveTemp(ParseResult.Data));
 	Asset->MarkPackageDirty();
 	Asset->PostEditChange();

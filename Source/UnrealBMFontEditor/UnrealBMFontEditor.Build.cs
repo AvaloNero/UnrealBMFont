@@ -17,6 +17,7 @@ public class UnrealBMFontEditor : ModuleRules
 				"ImageCore",
 				"InputCore",
 				"AssetDefinition",
+				"AssetRegistry",
 				"Projects",
 				"Slate",
 				"SlateCore",

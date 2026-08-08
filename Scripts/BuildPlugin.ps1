@@ -8,7 +8,9 @@ param(
 	[string]$OutputDirectory,
 
 	[ValidateNotNullOrEmpty()]
-	[string[]]$TargetPlatforms = @('Win64')
+	[string[]]$TargetPlatforms = @('Win64'),
+
+	[switch]$KeepPdb
 )
 
 $ErrorActionPreference = 'Stop'
@@ -145,6 +147,20 @@ $utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
 $verifiedDescriptor = Get-Content -LiteralPath $packagedDescriptor -Raw | ConvertFrom-Json
 if ($verifiedDescriptor.EnabledByDefault -ne $false -or $verifiedDescriptor.Installed -ne $true) {
 	throw "Packaged descriptor invariants were not preserved: $packagedDescriptor"
+}
+
+# Debug symbols are not part of the distributable package: the three editor PDBs
+# account for the overwhelming majority of the UAT output. The Intermediate .obj/.lib
+# files stay because precompiled game-target linking needs them.
+if (-not $KeepPdb) {
+	$pdbFiles = @(Get-ChildItem -LiteralPath $fullOutputDirectory -Recurse -Filter '*.pdb' -File)
+	$pdbBytes = ($pdbFiles | Measure-Object -Property Length -Sum).Sum
+	foreach ($pdbFile in $pdbFiles) {
+		Remove-Item -LiteralPath $pdbFile.FullName -Force
+	}
+	if ($pdbFiles.Count -gt 0) {
+		Write-Host ("Stripped {0} debug symbol file(s), {1:N1} MB, from the package." -f $pdbFiles.Count, ($pdbBytes / 1MB))
+	}
 }
 
 Write-Host "Unreal BMFont package created at: $fullOutputDirectory"
