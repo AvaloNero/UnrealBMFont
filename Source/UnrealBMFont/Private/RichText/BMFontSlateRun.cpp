@@ -86,7 +86,10 @@ int16 FBMFontSlateRun::GetMaxHeight(const float Scale) const
 		return 0;
 	}
 	return static_cast<int16>(FMath::Clamp(
-		FMath::RoundToInt(Font->FontData.Common.LineHeight * StyleBlock->Style.FontScale * Scale),
+		FMath::RoundToInt(
+			Font->FontData.Common.LineHeight * StyleBlock->Style.FontScale * Scale
+			+ FMath::Abs(StyleBlock->Style.ShadowOffset.Y * Scale)
+		),
 		0,
 		MAX_int16
 	));
@@ -101,7 +104,10 @@ FVector2D FBMFontSlateRun::Measure(
 	EnsureItems();
 	const int32 BeginItem = FindItemIndex(StartIndex);
 	const int32 EndItem = FindItemIndex(EndIndex);
-	return FVector2D(MeasureItems(BeginItem, EndItem) * Scale, GetMaxHeight(Scale));
+	return FVector2D(
+		MeasureItems(BeginItem, EndItem) * Scale + GetShadowSize(StartIndex, EndIndex, Scale).X,
+		GetMaxHeight(Scale)
+	);
 }
 
 int8 FBMFontSlateRun::GetKerning(const int32 CurrentIndex, const float Scale, const FRunTextContext& TextContext) const
@@ -117,6 +123,26 @@ int8 FBMFontSlateRun::GetKerning(const int32 CurrentIndex, const float Scale, co
 		MIN_int8,
 		MAX_int8
 	));
+}
+
+FVector2D FBMFontSlateRun::GetShadowSize(
+	const int32 StartIndex,
+	const int32 EndIndex,
+	const float Scale) const
+{
+	if (!StyleBlock.IsValid())
+	{
+		return FVector2D::ZeroVector;
+	}
+
+	const FVector2D ShadowOffset = StyleBlock->Style.ShadowOffset * Scale;
+	const bool bMeasureHorizontalShadow =
+		(ShadowOffset.X > 0.0f && EndIndex == Range.EndIndex)
+		|| (ShadowOffset.X < 0.0f && StartIndex == Range.BeginIndex);
+	return FVector2D(
+		bMeasureHorizontalShadow ? FMath::Abs(ShadowOffset.X) : 0.0f,
+		FMath::Abs(ShadowOffset.Y)
+	);
 }
 
 TSharedRef<ILayoutBlock> FBMFontSlateRun::CreateBlock(
@@ -235,6 +261,25 @@ int32 FBMFontSlateRun::OnPaint(
 	const float ContentWidth = MeasureItems(BeginItem, EndItem);
 	const float BlockLocalX = BlockOffset.X * InverseScale;
 	const float WidgetWidth = AllottedGeometry.GetLocalSize().X;
+	const FVector2D DrawShadowOffset(
+		FMath::Max(0.0f, Style.ShadowOffset.X),
+		FMath::Max(0.0f, Style.ShadowOffset.Y)
+	);
+	const FVector2D DrawTextOffset(
+		FMath::Max(0.0f, -Style.ShadowOffset.X),
+		FMath::Max(0.0f, -Style.ShadowOffset.Y)
+	);
+	const float ContentLocalX = BlockLocalX + DrawTextOffset.X;
+	const FSlateRect LocalCullingRect = TransformRect(
+		AllottedGeometry.GetAccumulatedRenderTransform().Inverse(),
+		MyCullingRect
+	);
+	const float VisibleWidgetLeft = FMath::Clamp(LocalCullingRect.Left, 0.0f, WidgetWidth);
+	const float VisibleWidgetRight = FMath::Clamp(
+		LocalCullingRect.Right,
+		VisibleWidgetLeft,
+		WidgetWidth
+	);
 
 	TArray<FGlyphItem, TInlineAllocator<3>> EllipsisItems;
 	const auto AddEllipsisGlyph = [this, &EllipsisItems, &Style](
@@ -294,8 +339,8 @@ int32 FBMFontSlateRun::OnPaint(
 		&& TextArgs.OverflowDirection != ETextOverflowDirection::NoOverflow
 		&& TextArgs.bIsLastVisibleBlock;
 	const bool bOverflows = TextArgs.OverflowDirection == ETextOverflowDirection::LeftToRight
-		? BlockLocalX + ContentWidth > WidgetWidth + KINDA_SMALL_NUMBER
-		: BlockLocalX < -KINDA_SMALL_NUMBER;
+		? ContentLocalX + ContentWidth > VisibleWidgetRight + KINDA_SMALL_NUMBER
+		: ContentLocalX < VisibleWidgetLeft - KINDA_SMALL_NUMBER;
 	const bool bPaintEllipsis = bUsesEllipsis && (bOverflows || TextArgs.bIsNextBlockClipped);
 
 	int32 PrefixEndItem = EndItem;
@@ -354,8 +399,8 @@ int32 FBMFontSlateRun::OnPaint(
 
 	if (bPaintEllipsis)
 	{
-		const float VisibleLeft = FMath::Max(0.0f, -BlockLocalX);
-		const float VisibleRight = FMath::Max(VisibleLeft, WidgetWidth - BlockLocalX);
+		const float VisibleLeft = FMath::Max(0.0f, VisibleWidgetLeft - ContentLocalX);
+		const float VisibleRight = FMath::Max(VisibleLeft, VisibleWidgetRight - ContentLocalX);
 		const float AvailableWidth = FMath::Max(0.0f, VisibleRight - VisibleLeft);
 		const float ContentBudget = FMath::Max(0.0f, AvailableWidth - EllipsisWidth);
 
@@ -461,13 +506,13 @@ int32 FBMFontSlateRun::OnPaint(
 		}
 	};
 
-	const FLinearColor Foreground = Style.Color * InWidgetStyle.GetColorAndOpacityTint();
+	const FLinearColor Foreground = Style.Color.GetColor(InWidgetStyle) * InWidgetStyle.GetColorAndOpacityTint();
 	const bool bHasShadow = !Style.ShadowOffset.IsNearlyZero() && Style.ShadowColor.A > 0.0f;
 	if (bHasShadow)
 	{
-		PaintPass(LayerId, Style.ShadowOffset, Style.ShadowColor * InWidgetStyle.GetColorAndOpacityTint());
+		PaintPass(LayerId, DrawShadowOffset, Style.ShadowColor * InWidgetStyle.GetColorAndOpacityTint());
 	}
-	PaintPass(LayerId + (bHasShadow ? 1 : 0), FVector2D::ZeroVector, Foreground);
+	PaintPass(LayerId + (bHasShadow ? 1 : 0), DrawTextOffset, Foreground);
 	return LayerId + (bHasShadow ? 1 : 0);
 }
 

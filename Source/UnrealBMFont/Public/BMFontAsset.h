@@ -32,7 +32,7 @@ public:
 	 * Material that extracts glyph coverage from packed-channel atlas pages.
 	 * Defaults to the plugin's M_BMFontPacked; ignored for non-packed descriptors.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BMFont", AdvancedDisplay)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BMFont", AdvancedDisplay, NoClear)
 	TSoftObjectPtr<UMaterialInterface> PackedRenderMaterial;
 
 	UFUNCTION(BlueprintPure, Category = "BMFont")
@@ -65,6 +65,7 @@ public:
 	uint32 GetDataRevision() const;
 	void SetFontData(FBMFontData InFontData);
 
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual void PostLoad() override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -75,6 +76,7 @@ private:
 
 	void RebuildLookup();
 	void ClearRenderResourceCache();
+	void EnsurePackedRenderMaterialReference();
 
 	TMap<uint64, int32> KerningLookup;
 	uint32 DataRevision = 1;

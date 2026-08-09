@@ -16,8 +16,11 @@
 #include "RHI.h"
 #include "ShaderCompiler.h"
 #include "Slate/WidgetRenderer.h"
+#include "Styling/StyleDefaults.h"
 #include "Widgets/BMFontRichTextBlock.h"
+#include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SConstraintCanvas.h"
 #include "Widgets/SBMFontText.h"
 
 namespace
@@ -435,6 +438,53 @@ bool FBMFontRenderPackedAtlasTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FBMFontRenderRichTextForegroundTest,
+	"UnrealBMFont.Render.RichTextForeground",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBMFontRenderRichTextForegroundTest::RunTest(const FString& Parameters)
+{
+	if (IsNullRHI())
+	{
+		AddInfo(TEXT("Render tests require a GPU run without -NullRHI; skipping."));
+		return true;
+	}
+
+	UBMFontAsset* Asset = CreateRenderFontAsset(GetTransientPackage(), false);
+	UBMFontRichTextBlock* RichText = NewObject<UBMFontRichTextBlock>();
+	RichText->SetFontAsset(Asset);
+	RichText->SetText(FText::FromString(TEXT("A")));
+	RichText->SetColorAndOpacity(FSlateColor::UseForeground());
+
+	TSharedRef<SWidget> Widget = SNew(SBorder)
+		.Padding(0.0f)
+		.BorderImage(FStyleDefaults::GetNoBrush())
+		.ForegroundColor(FLinearColor::Green)
+		[
+			RichText->TakeWidget()
+		];
+
+	const FIntPoint Size(32, 24);
+	TArray<FColor> Pixels;
+	RenderWidgetPixels(Widget, Size, Pixels);
+	if (!TestEqual(TEXT("Render produced a full pixel buffer"), Pixels.Num(), Size.X * Size.Y))
+	{
+		return false;
+	}
+
+	int32 GreenPixelCount = 0;
+	for (const FColor& Pixel : Pixels)
+	{
+		if (Pixel.G > 128 && Pixel.R < 32 && Pixel.B < 32)
+		{
+			++GreenPixelCount;
+		}
+	}
+	TestTrue(TEXT("UseForeground resolves through the parent widget style"), GreenPixelCount >= 60);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FBMFontRenderRichTextEllipsisTest,
 	"UnrealBMFont.Render.RichTextEllipsis",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -454,11 +504,21 @@ bool FBMFontRenderRichTextEllipsisTest::RunTest(const FString& Parameters)
 	RichText->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis);
 	RichText->SetClipping(EWidgetClipping::ClipToBounds);
 
+	// The run is deliberately wider than its clipping parent. Its own allotted width is
+	// 64 px, so ellipsis must derive the visible range from MyCullingRect, not local size.
 	TSharedRef<SWidget> Widget = SNew(SBox)
 		.WidthOverride(24.0f)
 		.HeightOverride(32.0f)
+		.Clipping(EWidgetClipping::ClipToBounds)
 		[
-			RichText->TakeWidget()
+			SNew(SConstraintCanvas)
+			+ SConstraintCanvas::Slot()
+			.Offset(FMargin(0.0f, 0.0f, 64.0f, 32.0f))
+			.Anchors(FAnchors(0.0f, 0.0f))
+			.Alignment(FVector2D::ZeroVector)
+			[
+				RichText->TakeWidget()
+			]
 		];
 
 	const FIntPoint Size(24, 32);

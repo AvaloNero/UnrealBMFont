@@ -7,6 +7,13 @@
 #include "CanvasTypes.h"
 #include "Engine/Texture2D.h"
 
+UTexture2D* UBMFontThumbnailRenderer::ResolvePreviewTexture(const UBMFontAsset* Asset)
+{
+	return Asset != nullptr && !Asset->FontData.Pages.IsEmpty()
+		? Asset->GetPageTexture(Asset->FontData.Pages[0].Id)
+		: nullptr;
+}
+
 void UBMFontThumbnailRenderer::Draw(
 	UObject* Object,
 	const int32 X,
@@ -18,7 +25,7 @@ void UBMFontThumbnailRenderer::Draw(
 	const bool bAdditionalViewFamily)
 {
 	const UBMFontAsset* Asset = Cast<UBMFontAsset>(Object);
-	UTexture2D* Texture = Asset != nullptr ? Asset->GetPageTexture(0) : nullptr;
+	UTexture2D* Texture = ResolvePreviewTexture(Asset);
 	if (Texture == nullptr || Texture->GetResource() == nullptr)
 	{
 		return;

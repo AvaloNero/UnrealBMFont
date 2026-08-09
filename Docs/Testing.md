@@ -11,10 +11,10 @@ The `UnrealBMFont.*` suite covers:
 - Kerning, tracking, glyph offsets, wrapping, explicit lines, tabs, fallback, missing glyphs, and line-height semantics.
 - A real generated PNG plus `.fnt` import through `UBMFontFactory`.
 - The packaged multilingual Showcase fixture, including representative Latin, Hiragana, Chinese, and fallback code points.
-- UI texture defaults, source path tracking, descriptor reimport, and preservation of user-edited texture filtering.
+- UI texture defaults, source path tracking, transactional multi-page reimport/rollback, and preservation of user-edited texture filtering.
 - Slate desired-size calculation and invalidation after text changes.
-- Rich text run measurement through `UBMFontRichTextBlock`, including kerning, fallback, tagged and empty runs, runtime font assignment, and screenshot coverage for ellipsis painting.
-- Packed-channel mapping, packed import through `UBMFontFactory`, and render-resource separation by page and glyph channel.
+- Rich text run measurement through `UBMFontRichTextBlock`, including kerning, fallback, tagged and empty runs, runtime font assignment, inherited foreground colors, shadow bounds, and screenshot coverage for parent-clipped ellipsis painting.
+- Packed-channel mapping, packed import/reimport through `UBMFontFactory`, packaged material dependency on real save, and render-resource separation by page and glyph channel.
 
 ## Screenshot render tests
 
@@ -61,7 +61,9 @@ pwsh ./Scripts/BuildPlugin.ps1 `
   -TargetPlatforms Win64
 ```
 
-The wrapper first creates a clean source staging copy outside the repository, excluding local engine trees, build products, reports, and previous packages. This matters because UE 5.8's `BuildPlugin` command copies the complete input plugin to its temporary host before applying `FilterPlugin.ini`. The wrapper also verifies that the packaged descriptor is both installed and opt-in. Raw `BuildPlugin` removes `EnabledByDefault`; publishing that uncorrected descriptor from a project-local package can prevent a content-only project from generating a plugin-aware game target.
+The wrapper first creates a clean source staging copy outside the repository, excluding local engine trees, build products, reports, and previous packages. Its internal host and package live under a shared neutral build root (override with `-BuildRoot`), so compiler paths do not expose a developer profile or source checkout. This matters because UE 5.8's `BuildPlugin` command copies the complete input plugin to its temporary host before applying `FilterPlugin.ini`.
+
+Before copying to `OutputDirectory`, the wrapper verifies that the packaged descriptor is both installed and opt-in, checks the required license/readme/compatibility files, strips PDBs by default, and scans every packaged file for the user-profile and source-checkout paths. Raw `BuildPlugin` removes `EnabledByDefault`; publishing that uncorrected descriptor from a project-local package can prevent a content-only project from generating a plugin-aware game target.
 
 Do not describe a static source scan as a successful runtime test. A release checklist should retain the BuildPlugin log, automation `index.json`, cook log, and packaged runtime evidence.
 

@@ -27,7 +27,7 @@ pwsh ./Scripts/BuildPlugin.ps1 `
 
 `BuildPlugin` must pass for UnrealEditor, UnrealGame Development, and UnrealGame Shipping on the platform being claimed.
 
-Unreal Automation Tool copies the complete plugin directory into a temporary host before applying `FilterPlugin.ini`. Keep engine trees, local build caches, packages, and automation reports outside the plugin root. The wrapper creates a clean temporary staging copy and rejects output directories inside the source tree so `.build`, `Artifacts`, and earlier packages are never restaged.
+Unreal Automation Tool copies the complete plugin directory into a temporary host before applying `FilterPlugin.ini`. Keep engine trees, local build caches, packages, and automation reports outside the plugin root. The wrapper creates a clean staging copy under a shared neutral build root, rejects output directories inside the source tree, and audits the package for personal/source paths before delivery. Pass `-BuildRoot` only when the default shared Documents location is unavailable; it must remain outside the checkout and should not contain a user name.
 
 ## Test
 

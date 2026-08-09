@@ -19,6 +19,7 @@
 #include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
 #include "ObjectTools.h"
+#include "Thumbnail/BMFontThumbnailRenderer.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 
@@ -164,6 +165,138 @@ bool FBMFontFactoryImportAndReimportTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Failed reimport preserves texture filtering"), PreservedPage->Texture->Filter, TF_Nearest);
 	}
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FBMFontFactoryAtomicReimportTest,
+	"UnrealBMFont.Editor.AtomicReimport",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBMFontFactoryAtomicReimportTest::RunTest(const FString& Parameters)
+{
+	const FString UniqueId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	const FString TempDirectory = FPaths::Combine(
+		FPaths::ProjectIntermediateDir(),
+		TEXT("UnrealBMFontTests"),
+		UniqueId
+	);
+	TestTrue(TEXT("Temporary source directory can be created"), IFileManager::Get().MakeDirectory(*TempDirectory, true));
+	ON_SCOPE_EXIT
+	{
+		IFileManager::Get().DeleteDirectory(*TempDirectory, false, true);
+	};
+
+	for (int32 PageId = 0; PageId < 3; ++PageId)
+	{
+		TArray<FColor> Pixels;
+		Pixels.Init(PageId == 0 ? FColor::White : FColor::Black, 16);
+		TArray<uint8> PngBytes;
+		FImageUtils::ThumbnailCompressImageArray(4, 4, Pixels, PngBytes);
+		const FString AtlasFilename = FPaths::Combine(
+			TempDirectory,
+			FString::Printf(TEXT("page-%d.png"), PageId)
+		);
+		if (!TestTrue(TEXT("Atomic reimport PNG fixture can be written"), FFileHelper::SaveArrayToFile(PngBytes, *AtlasFilename)))
+		{
+			return false;
+		}
+	}
+
+	const FString DescriptorFilename = FPaths::Combine(TempDirectory, TEXT("atomic-reimport.fnt"));
+	const FString Descriptor =
+		FString(TEXT("info face=\"Atomic Reimport\" size=4 unicode=1 smooth=0 padding=0,0,0,0 spacing=0,0\n"))
+		+ TEXT("common lineHeight=4 base=4 scaleW=4 scaleH=4 pages=3 packed=0 alphaChnl=0 redChnl=4 greenChnl=4 blueChnl=4\n")
+		+ TEXT("page id=0 file=\"page-0.png\"\n")
+		+ TEXT("page id=1 file=\"page-1.png\"\n")
+		+ TEXT("page id=2 file=\"page-2.png\"\n")
+		+ TEXT("chars count=1\n")
+		+ TEXT("char id=65 x=0 y=0 width=4 height=4 xoffset=0 yoffset=0 xadvance=4 page=0 chnl=15\n");
+	if (!TestTrue(
+		TEXT("Atomic reimport descriptor can be written"),
+		FFileHelper::SaveStringToFile(
+			Descriptor,
+			*DescriptorFilename,
+			FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)))
+	{
+		return false;
+	}
+
+	const FString AssetName = FString::Printf(TEXT("AtomicReimport_%s"), *UniqueId);
+	UPackage* Package = CreatePackage(*FString::Printf(TEXT("/Engine/Transient/%s"), *AssetName));
+	Package->SetFlags(RF_Transient);
+	UBMFontAsset* Asset = NewObject<UBMFontAsset>(
+		Package,
+		*AssetName,
+		RF_Public | RF_Standalone | RF_Transient | RF_Transactional
+	);
+	UTexture2D* FirstTexture = NewObject<UTexture2D>(
+		Package,
+		*FString::Printf(TEXT("%s_Page_0"), *AssetName),
+		RF_Public | RF_Standalone | RF_Transient | RF_Transactional
+	);
+	TArray64<uint8> OriginalFirstPageBytes;
+	OriginalFirstPageBytes.Init(0x2A, 4 * 4 * 4);
+	FirstTexture->PreEditChange(nullptr);
+	FirstTexture->Source.Init(4, 4, 1, 1, TSF_BGRA8, OriginalFirstPageBytes.GetData());
+	FirstTexture->PostEditChange();
+
+	// Page 1 has no existing destination. A source-less page 2 then forces snapshot
+	// validation to fail: page 0 must stay unchanged and page 1 must not be orphaned.
+	UTexture2D* InvalidLastTexture = NewObject<UTexture2D>(
+		Package,
+		*FString::Printf(TEXT("%s_Page_2"), *AssetName),
+		RF_Public | RF_Standalone | RF_Transient | RF_Transactional
+	);
+
+	FBMFontData ExistingData;
+	ExistingData.DescriptorFormat = EBMFontDescriptorFormat::Text;
+	ExistingData.Common.LineHeight = 4;
+	ExistingData.Common.Base = 4;
+	ExistingData.Common.ScaleWidth = 4;
+	ExistingData.Common.ScaleHeight = 4;
+	ExistingData.Common.PageCount = 2;
+	FBMFontPage& ExistingFirstPage = ExistingData.Pages.AddDefaulted_GetRef();
+	ExistingFirstPage.Id = 0;
+	ExistingFirstPage.File = TEXT("old-0.png");
+	ExistingFirstPage.Texture = FirstTexture;
+	FBMFontPage& ExistingLastPage = ExistingData.Pages.AddDefaulted_GetRef();
+	ExistingLastPage.Id = 2;
+	ExistingLastPage.File = TEXT("old-2.png");
+	ExistingLastPage.Texture = InvalidLastTexture;
+	FBMFontGlyph& ExistingGlyph = ExistingData.Glyphs.Add(TEXT('A'));
+	ExistingGlyph.Codepoint = TEXT('A');
+	ExistingGlyph.Width = 4;
+	ExistingGlyph.Height = 4;
+	ExistingGlyph.XAdvance = 2;
+	ExistingGlyph.Page = 0;
+	Asset->SetFontData(MoveTemp(ExistingData));
+	Asset->AssetImportData->Update(DescriptorFilename);
+
+	AddExpectedError(TEXT("Failed to snapshot BMFont page texture"), EAutomationExpectedErrorFlags::Contains, 1);
+	UBMFontFactory* Factory = NewObject<UBMFontFactory>();
+	TestEqual(TEXT("Reimport fails before committing an invalid destination"), Factory->Reimport(Asset), EReimportResult::Failed);
+
+	const FBMFontGlyph* PreservedGlyph = Asset->FindGlyph(TEXT('A'));
+	if (TestNotNull(TEXT("Failed atomic reimport preserves glyph data"), PreservedGlyph))
+	{
+		TestEqual(TEXT("Failed atomic reimport preserves glyph metrics"), PreservedGlyph->XAdvance, 2);
+	}
+	TestEqual(TEXT("Failed atomic reimport preserves the first texture object"), Asset->GetPageTexture(0), FirstTexture);
+	TArray64<uint8> PreservedFirstPageBytes;
+	TestTrue(TEXT("Preserved first page source remains readable"), FirstTexture->Source.GetMipData(PreservedFirstPageBytes, 0));
+	TestTrue(
+		TEXT("Failed atomic reimport preserves first page bytes"),
+		PreservedFirstPageBytes == OriginalFirstPageBytes
+	);
+	TestNull(
+		TEXT("Failed atomic reimport does not orphan a newly requested page texture"),
+		StaticFindObjectFast(
+			UTexture2D::StaticClass(),
+			Package,
+			*FString::Printf(TEXT("%s_Page_1"), *AssetName)
+		)
+	);
 	return true;
 }
 
@@ -324,6 +457,18 @@ bool FBMFontFactoryPackedImportTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	TestFalse(TEXT("Packed page texture disables sRGB"), Page->Texture->SRGB);
+	UTexture2D* const ImportedPackedTexture = Page->Texture;
+
+	AddExpectedMessage(
+		TEXT("The descriptor uses packed texture channels"),
+		ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains,
+		1,
+		false
+	);
+	TestEqual(TEXT("Packed descriptor reimport succeeds"), Factory->Reimport(Asset), EReimportResult::Succeeded);
+	TestEqual(TEXT("Packed reimport preserves the page texture object"), Asset->GetPageTexture(0), ImportedPackedTexture);
+	TestFalse(TEXT("Packed reimport keeps sRGB disabled"), ImportedPackedTexture->SRGB);
 
 	TestNotNull(
 		TEXT("Packed page resolves a render resource"),
@@ -396,7 +541,7 @@ bool FBMFontAtlasPreviewSmokeTest::RunTest(const FString& Parameters)
 	for (int32 PageId = 0; PageId < 2; ++PageId)
 	{
 		FBMFontPage& Page = Data.Pages.AddDefaulted_GetRef();
-		Page.Id = PageId;
+		Page.Id = PageId == 0 ? 5 : 9;
 		Page.File = TEXT("atlas.png");
 		Page.Texture = NewObject<UTexture2D>(Asset);
 	}
@@ -405,13 +550,18 @@ bool FBMFontAtlasPreviewSmokeTest::RunTest(const FString& Parameters)
 	Glyph.Width = 4;
 	Glyph.Height = 4;
 	Glyph.XAdvance = 4;
-	Glyph.Page = 1;
+	Glyph.Page = 9;
 	Asset->SetFontData(MoveTemp(Data));
+	TestEqual(
+		TEXT("Thumbnail resolves the descriptor's first page ID"),
+		UBMFontThumbnailRenderer::ResolvePreviewTexture(Asset),
+		Asset->GetPageTexture(5)
+	);
 
 	int32 SelectedCodepoint = INDEX_NONE;
 	TSharedRef<SBMFontAtlasPreview> Preview = SNew(SBMFontAtlasPreview)
 		.FontAsset(Asset)
-		.PageId(0)
+		.PageId(5)
 		.OnGlyphSelected(FOnBMFontGlyphSelected::CreateLambda(
 			[&SelectedCodepoint](const int32 Codepoint)
 			{
@@ -422,7 +572,7 @@ bool FBMFontAtlasPreviewSmokeTest::RunTest(const FString& Parameters)
 	Preview->SlatePrepass(1.0f);
 	TestTrue(TEXT("Atlas preview prepasses"), Preview->GetDesiredSize().X >= 0.0f);
 
-	Preview->SetPageId(1);
+	Preview->SetPageId(9);
 	Preview->SetSelectedCodepoint(65);
 	Preview->SlatePrepass(1.0f);
 	TestEqual(TEXT("Selection callback does not fire without input"), SelectedCodepoint, INDEX_NONE);
@@ -507,6 +657,8 @@ bool FBMFontFactoryRealPackageSaveTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	TestFalse(TEXT("Fresh import disables sRGB on the packed page"), Asset->GetPageTexture(0)->SRGB);
+	Asset->PackedRenderMaterial.Reset();
+	TestTrue(TEXT("Test precondition clears the packed material reference"), Asset->PackedRenderMaterial.IsNull());
 
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
@@ -515,6 +667,7 @@ bool FBMFontFactoryRealPackageSaveTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
+	TestFalse(TEXT("PreSave restores a cleared default packed material reference"), Asset->PackedRenderMaterial.IsNull());
 
 	// The packed material reference must reach the asset registry on save, or cooks will
 	// never include it (a CDO default is delta-serialized away and never lands here).

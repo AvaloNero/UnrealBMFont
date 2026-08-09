@@ -151,7 +151,7 @@ void UBMFontRichTextBlock::CreateDecorators(TArray<TSharedRef<ITextDecorator>>& 
 FBMFontRunStyle UBMFontRichTextBlock::MakeRunStyle() const
 {
 	FBMFontRunStyle RunStyle;
-	RunStyle.Color = ColorAndOpacity.GetSpecifiedColor();
+	RunStyle.Color = ColorAndOpacity;
 	RunStyle.ShadowColor = ShadowColorAndOpacity;
 	RunStyle.ShadowOffset = ShadowOffset;
 	RunStyle.FontScale = FontScale;

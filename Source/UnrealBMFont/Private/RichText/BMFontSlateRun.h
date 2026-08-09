@@ -19,7 +19,7 @@ class UBMFontAsset;
 /** Appearance and layout inputs shared by all runs of one decorator. */
 struct FBMFontRunStyle
 {
-	FLinearColor Color = FLinearColor::White;
+	FSlateColor Color = FSlateColor(FLinearColor::White);
 	FLinearColor ShadowColor = FLinearColor::Transparent;
 	FVector2D ShadowOffset = FVector2D::ZeroVector;
 	float FontScale = 1.0f;
@@ -62,6 +62,7 @@ public:
 	virtual int16 GetMaxHeight(float Scale) const override;
 	virtual FVector2D Measure(int32 StartIndex, int32 EndIndex, float Scale, const FRunTextContext& TextContext) const override;
 	virtual int8 GetKerning(int32 CurrentIndex, float Scale, const FRunTextContext& TextContext) const override;
+	virtual FVector2D GetShadowSize(int32 StartIndex, int32 EndIndex, float Scale) const override;
 	virtual TSharedRef<ILayoutBlock> CreateBlock(
 		int32 StartIndex,
 		int32 EndIndex,

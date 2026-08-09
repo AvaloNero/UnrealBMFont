@@ -10,6 +10,8 @@ param(
 	[ValidateNotNullOrEmpty()]
 	[string[]]$TargetPlatforms = @('Win64'),
 
+	[string]$BuildRoot,
+
 	[switch]$KeepPdb
 )
 
@@ -26,8 +28,67 @@ function Test-IsPathInsideDirectory {
 
 	$fullCandidate = [System.IO.Path]::GetFullPath($Candidate)
 	$fullParent = [System.IO.Path]::GetFullPath($Parent)
+	if ($fullCandidate.Equals($fullParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+		return $true
+	}
 	$parentPrefix = [System.IO.Path]::TrimEndingDirectorySeparator($fullParent) + [System.IO.Path]::DirectorySeparatorChar
 	return $fullCandidate.StartsWith($parentPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-FileContainsText {
+	param(
+		[Parameter(Mandatory = $true)]
+		[string]$Path,
+
+		[Parameter(Mandatory = $true)]
+		[string[]]$Needles
+	)
+
+	$latin1 = [System.Text.Encoding]::GetEncoding(28591)
+	$utf8 = [System.Text.UTF8Encoding]::new($false)
+	$utf16 = [System.Text.Encoding]::Unicode
+	$patterns = @()
+	foreach ($needle in $Needles) {
+		foreach ($variant in @($needle, $needle.Replace('\', '/'))) {
+			$patterns += $latin1.GetString($utf8.GetBytes($variant))
+			$patterns += $latin1.GetString($utf16.GetBytes($variant))
+		}
+	}
+	$patterns = @($patterns | Where-Object { $_.Length -gt 0 } | Select-Object -Unique)
+	if ($patterns.Count -eq 0) {
+		return $false
+	}
+
+	$maxPatternLength = ($patterns | Measure-Object -Property Length -Maximum).Maximum
+	$chunkSize = 1MB
+	$buffer = [byte[]]::new($chunkSize + $maxPatternLength - 1)
+	$carryLength = 0
+	$stream = [System.IO.File]::OpenRead($Path)
+	try {
+		while (($readLength = $stream.Read($buffer, $carryLength, $chunkSize)) -gt 0) {
+			$totalLength = $carryLength + $readLength
+			$byteString = $latin1.GetString($buffer, 0, $totalLength)
+			foreach ($pattern in $patterns) {
+				if ($byteString.IndexOf($pattern, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+					return $true
+				}
+			}
+
+			$carryLength = [System.Math]::Min($maxPatternLength - 1, $totalLength)
+			if ($carryLength -gt 0) {
+				[System.Buffer]::BlockCopy(
+					$buffer,
+					$totalLength - $carryLength,
+					$buffer,
+					0,
+					$carryLength
+				)
+			}
+		}
+		return $false
+	} finally {
+		$stream.Dispose()
+	}
 }
 
 $resolvedEngineRoot = (Resolve-Path -LiteralPath $EngineRoot).Path
@@ -60,10 +121,30 @@ if (Test-Path -LiteralPath $fullOutputDirectory) {
 	New-Item -ItemType Directory -Path $fullOutputDirectory | Out-Null
 }
 
-$stagingBase = Join-Path $temporaryRoot 'Staging'
-$stagingRoot = Join-Path $stagingBase ([System.Guid]::NewGuid().ToString('N'))
+$commonDocuments = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::CommonDocuments)
+if ([string]::IsNullOrWhiteSpace($BuildRoot)) {
+	if ([string]::IsNullOrWhiteSpace($commonDocuments)) {
+		throw 'The shared Documents directory could not be resolved; pass -BuildRoot with a neutral path outside the plugin tree.'
+	}
+	$BuildRoot = Join-Path $commonDocuments 'UnrealBMFontBuild'
+}
+$fullBuildRoot = [System.IO.Path]::GetFullPath($BuildRoot)
+if (Test-IsPathInsideDirectory -Candidate $fullBuildRoot -Parent $pluginRoot) {
+	throw "BuildRoot must be outside the plugin source tree: $fullBuildRoot"
+}
+if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE) `
+	-and (Test-IsPathInsideDirectory -Candidate $fullBuildRoot -Parent $env:USERPROFILE)) {
+	throw "BuildRoot must not be inside the current user profile because compile paths enter release binaries: $fullBuildRoot"
+}
+
+# BuildPlugin embeds compile paths in binaries and intermediate objects. Keep its host,
+# source staging, and package output under a shared neutral root, then copy only the
+# audited result to the caller's requested destination.
+$buildRunRoot = Join-Path $fullBuildRoot ("Run-" + [System.Guid]::NewGuid().ToString('N'))
+$stagingRoot = Join-Path $buildRunRoot 'Source'
 $stagedPluginRoot = Join-Path $stagingRoot 'UnrealBMFont'
 $stagedPlugin = Join-Path $stagedPluginRoot 'UnrealBMFont.uplugin'
+$internalPackageDirectory = Join-Path $buildRunRoot 'Package'
 
 try {
 	New-Item -ItemType Directory -Path $stagedPluginRoot -Force | Out-Null
@@ -110,57 +191,112 @@ try {
 	$platformArgument = $TargetPlatforms -join '+'
 	& $uat BuildPlugin `
 		"-Plugin=$stagedPlugin" `
-		"-Package=$fullOutputDirectory" `
+		"-Package=$internalPackageDirectory" `
 		"-TargetPlatforms=$platformArgument" `
 		-Rocket
 
 	if ($LASTEXITCODE -ne 0) {
-		throw "BuildPlugin failed with exit code $LASTEXITCODE. Output remains at $fullOutputDirectory for inspection."
+		throw "BuildPlugin failed with exit code $LASTEXITCODE."
 	}
-} finally {
-	if (Test-Path -LiteralPath $stagingRoot) {
-		if (-not (Test-IsPathInsideDirectory -Candidate $stagingRoot -Parent $stagingBase)) {
-			throw "Refusing to remove an unexpected staging path: $stagingRoot"
+
+	# BuildPlugin intentionally removes EnabledByDefault while marking the package as
+	# installed. Restoring the explicit opt-in prevents a project-local precompiled
+	# package from being mistaken for part of the generic UnrealGame target.
+	$packagedDescriptor = Join-Path $internalPackageDirectory 'UnrealBMFont.uplugin'
+	if (-not (Test-Path -LiteralPath $packagedDescriptor -PathType Leaf)) {
+		throw "BuildPlugin succeeded but did not produce the plugin descriptor: $packagedDescriptor"
+	}
+	$descriptor = Get-Content -LiteralPath $packagedDescriptor -Raw | ConvertFrom-Json
+	$enabledByDefault = $descriptor.PSObject.Properties['EnabledByDefault']
+	if ($null -eq $enabledByDefault) {
+		$descriptor | Add-Member -NotePropertyName 'EnabledByDefault' -NotePropertyValue $false
+	} else {
+		$enabledByDefault.Value = $false
+	}
+	$descriptorJson = $descriptor | ConvertTo-Json -Depth 100
+	$utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
+	[System.IO.File]::WriteAllText($packagedDescriptor, $descriptorJson + [Environment]::NewLine, $utf8WithoutBom)
+
+	$verifiedDescriptor = Get-Content -LiteralPath $packagedDescriptor -Raw | ConvertFrom-Json
+	if ($verifiedDescriptor.EnabledByDefault -ne $false -or $verifiedDescriptor.Installed -ne $true) {
+		throw "Packaged descriptor invariants were not preserved: $packagedDescriptor"
+	}
+
+	# Debug symbols are not part of the distributable package: the three editor PDBs
+	# account for the overwhelming majority of the UAT output. The Intermediate .obj/.lib
+	# files stay because precompiled game-target linking needs them.
+	if (-not $KeepPdb) {
+		$pdbFiles = @(Get-ChildItem -LiteralPath $internalPackageDirectory -Recurse -Filter '*.pdb' -File)
+		$pdbBytes = ($pdbFiles | Measure-Object -Property Length -Sum).Sum
+		foreach ($pdbFile in $pdbFiles) {
+			Remove-Item -LiteralPath $pdbFile.FullName -Force
 		}
-		Remove-Item -LiteralPath $stagingRoot -Recurse -Force
+		if ($pdbFiles.Count -gt 0) {
+			Write-Host ("Stripped {0} debug symbol file(s), {1:N1} MB, from the package." -f $pdbFiles.Count, ($pdbBytes / 1MB))
+		}
+	}
+
+	$requiredPackageFiles = @(
+		'LICENSE',
+		'THIRD_PARTY_NOTICES.md',
+		'README.md',
+		'README.zh-CN.md',
+		'CHANGELOG.md',
+		'Docs\Compatibility.md',
+		'Docs\FormatSupport.md'
+	)
+	foreach ($relativePath in $requiredPackageFiles) {
+		$requiredPath = Join-Path $internalPackageDirectory $relativePath
+		if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+			throw "Required release file is missing from the package: $relativePath"
+		}
+	}
+
+	$personalRoots = @($env:USERPROFILE, $pluginRoot) `
+		| Where-Object { -not [string]::IsNullOrWhiteSpace($_) } `
+		| ForEach-Object { [System.IO.Path]::GetFullPath($_) } `
+		| Select-Object -Unique
+	$pathLeaks = @(
+		Get-ChildItem -LiteralPath $internalPackageDirectory -Recurse -File -Force | Where-Object {
+			Test-FileContainsText -Path $_.FullName -Needles $personalRoots
+		} | ForEach-Object {
+			[System.IO.Path]::GetRelativePath($internalPackageDirectory, $_.FullName)
+		}
+	)
+	if ($pathLeaks.Count -gt 0) {
+		throw "Package contains personal/source absolute paths in: $($pathLeaks -join ', ')"
+	}
+
+	$copyArguments = @(
+		$internalPackageDirectory,
+		$fullOutputDirectory,
+		'/E',
+		'/R:1',
+		'/W:1',
+		'/COPY:DAT',
+		'/DCOPY:DAT',
+		'/NFL',
+		'/NDL',
+		'/NJH',
+		'/NJS',
+		'/NP'
+	)
+	& robocopy.exe @copyArguments
+	$copyExitCode = $LASTEXITCODE
+	if ($copyExitCode -gt 7) {
+		throw "Failed to copy the audited plugin package; robocopy exited with code $copyExitCode."
+	}
+	# Robocopy uses 1-7 for successful copy variants. Do not leak that native status
+	# to callers that inspect LASTEXITCODE after this script returns.
+	$global:LASTEXITCODE = 0
+
+	Write-Host "Package audit passed: release files present and no personal/source paths found."
+	Write-Host "Unreal BMFont package created at: $fullOutputDirectory"
+} finally {
+	if (Test-Path -LiteralPath $buildRunRoot) {
+		if (-not (Test-IsPathInsideDirectory -Candidate $buildRunRoot -Parent $fullBuildRoot)) {
+			throw "Refusing to remove an unexpected build path: $buildRunRoot"
+		}
+		Remove-Item -LiteralPath $buildRunRoot -Recurse -Force
 	}
 }
-
-# BuildPlugin intentionally removes EnabledByDefault while marking the package as
-# installed. Restoring the explicit opt-in prevents a project-local precompiled
-# package from being mistaken for part of the generic UnrealGame target.
-$packagedDescriptor = Join-Path $fullOutputDirectory 'UnrealBMFont.uplugin'
-if (-not (Test-Path -LiteralPath $packagedDescriptor -PathType Leaf)) {
-	throw "BuildPlugin succeeded but did not produce the plugin descriptor: $packagedDescriptor"
-}
-$descriptor = Get-Content -LiteralPath $packagedDescriptor -Raw | ConvertFrom-Json
-$enabledByDefault = $descriptor.PSObject.Properties['EnabledByDefault']
-if ($null -eq $enabledByDefault) {
-	$descriptor | Add-Member -NotePropertyName 'EnabledByDefault' -NotePropertyValue $false
-} else {
-	$enabledByDefault.Value = $false
-}
-$descriptorJson = $descriptor | ConvertTo-Json -Depth 100
-$utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
-[System.IO.File]::WriteAllText($packagedDescriptor, $descriptorJson + [Environment]::NewLine, $utf8WithoutBom)
-
-$verifiedDescriptor = Get-Content -LiteralPath $packagedDescriptor -Raw | ConvertFrom-Json
-if ($verifiedDescriptor.EnabledByDefault -ne $false -or $verifiedDescriptor.Installed -ne $true) {
-	throw "Packaged descriptor invariants were not preserved: $packagedDescriptor"
-}
-
-# Debug symbols are not part of the distributable package: the three editor PDBs
-# account for the overwhelming majority of the UAT output. The Intermediate .obj/.lib
-# files stay because precompiled game-target linking needs them.
-if (-not $KeepPdb) {
-	$pdbFiles = @(Get-ChildItem -LiteralPath $fullOutputDirectory -Recurse -Filter '*.pdb' -File)
-	$pdbBytes = ($pdbFiles | Measure-Object -Property Length -Sum).Sum
-	foreach ($pdbFile in $pdbFiles) {
-		Remove-Item -LiteralPath $pdbFile.FullName -Force
-	}
-	if ($pdbFiles.Count -gt 0) {
-		Write-Host ("Stripped {0} debug symbol file(s), {1:N1} MB, from the package." -f $pdbFiles.Count, ($pdbBytes / 1MB))
-	}
-}
-
-Write-Host "Unreal BMFont package created at: $fullOutputDirectory"

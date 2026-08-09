@@ -6,6 +6,7 @@
 #include "Engine/Texture2D.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "UnrealBMFontModule.h"
+#include "UObject/ObjectSaveContext.h"
 
 #if WITH_EDITORONLY_DATA
 #include "EditorFramework/AssetImportData.h"
@@ -22,9 +23,8 @@ namespace
 
 UBMFontAsset::UBMFontAsset()
 {
-	// Deliberately empty: a CDO-default soft reference is delta-serialized away on save,
-	// so it never reaches the asset registry and the material would not cook. The factory
-	// assigns the default path at import; GetPageRenderResource falls back to it at runtime.
+	// Keep the CDO reference empty. Packed instances acquire an explicit soft reference
+	// when their descriptor data is assigned, so it is serialized and reaches the cooker.
 #if WITH_EDITORONLY_DATA
 	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
@@ -156,14 +156,22 @@ uint32 UBMFontAsset::GetDataRevision() const
 void UBMFontAsset::SetFontData(FBMFontData InFontData)
 {
 	FontData = MoveTemp(InFontData);
+	EnsurePackedRenderMaterialReference();
 	ClearRenderResourceCache();
 	RebuildLookup();
 	++DataRevision;
 }
 
+void UBMFontAsset::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
+	EnsurePackedRenderMaterialReference();
+	Super::PreSave(ObjectSaveContext);
+}
+
 void UBMFontAsset::PostLoad()
 {
 	Super::PostLoad();
+	EnsurePackedRenderMaterialReference();
 	RebuildLookup();
 }
 
@@ -171,11 +179,22 @@ void UBMFontAsset::PostLoad()
 void UBMFontAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+	EnsurePackedRenderMaterialReference();
 	ClearRenderResourceCache();
 	RebuildLookup();
 	++DataRevision;
 }
 #endif
+
+void UBMFontAsset::EnsurePackedRenderMaterialReference()
+{
+	if (FontData.Common.bPacked && PackedRenderMaterial.IsNull())
+	{
+		PackedRenderMaterial = TSoftObjectPtr<UMaterialInterface>(
+			FSoftObjectPath(BMFontRendering::GetDefaultPackedMaterialPath())
+		);
+	}
+}
 
 void UBMFontAsset::RebuildLookup()
 {

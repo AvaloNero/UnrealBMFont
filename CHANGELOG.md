@@ -2,12 +2,13 @@
 
 All notable changes to Unreal BMFont are documented here. The project follows [Semantic Versioning](https://semver.org/) and the structure of [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.2.0] - 2026-08-07
+## [Unreleased]
 
 ### Added
 
 - Channel-aware rendering for packed-channel (`packed=1`) atlases: glyphs sharing a page can select independent `char.chnl` masks through cached instances of the bundled `M_BMFontPacked` UI material. The asset's **Packed Render Material** property overrides the material per asset.
 - Packed descriptor import with sRGB-disabled page textures and a warning when reimport preserves an sRGB-enabled texture.
+- Transactional multi-page reimport that stages every image before commit and rolls back destination textures on failure.
 - `UBMFontRichTextBlock`, a rich text adapter that renders tagged (and optionally plain) runs with a BMFont asset. Kerning resolves within each run, empty tags stay empty, and ellipsis overflow policies are rendered with asset glyphs.
 - Editor thumbnails for BMFont assets, drawn from the first atlas page.
 - A read-only font/atlas inspector (double-click an asset) with a descriptor summary, an atlas preview with glyph rectangles and click-to-select, and a glyph table.
@@ -18,6 +19,8 @@ All notable changes to Unreal BMFont are documented here. The project follows [S
 
 - The plugin descriptor now allows content (`CanContainContent`) to ship `M_BMFontPacked`.
 - Rich-text brush caches are scoped to glyphs used by each run and refreshed by asset revision.
+- Packed assets persist the bundled render-material dependency even when the override was cleared before saving.
+- Rich-text foreground colors now honor inherited Slate style colors; clipping, ellipsis, and shadow bounds match the effective paint region.
 - The asset inspector refreshes its summary, pages, atlas, and glyph rows after successful reimport.
 
 ## [0.1.0] - 2026-08-05

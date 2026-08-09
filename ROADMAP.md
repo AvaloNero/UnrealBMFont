@@ -13,6 +13,6 @@ The roadmap records direction, not a compatibility promise.
 - Public API and serialized asset versioning policy.
 - Verified compatibility across at least two Unreal minor versions.
 - CI coverage for Editor, Development, Shipping, automation, cook, and a packaged runtime smoke test.
-- Documented migration path for every breaking beta change.
+- Documented upgrade guidance for every breaking beta change.
 
 Bidirectional text and OpenType shaping are not planned for the core renderer: those jobs require a shaping engine and source font data, which BMFont does not contain.

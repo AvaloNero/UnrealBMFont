@@ -2,9 +2,9 @@
 
 #include "BMFontFactory.h"
 
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "BMFontAsset.h"
 #include "BMFontParser.h"
-#include "BMFontRendering.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Engine/Texture2D.h"
 #include "Factories/TextureFactory.h"
@@ -13,29 +13,40 @@
 #include "Misc/Paths.h"
 #include "ObjectTools.h"
 #include "UnrealBMFontModule.h"
+#include "UObject/UObjectGlobals.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBMFontFactory"
 
 namespace
 {
-	/** Deep snapshot of an existing page texture's source, used to roll back a failed reimport. */
-	struct FPageTextureBackup
+	/** Deep, single-layer snapshot used both for staging and rollback. */
+	struct FPageTextureSourceSnapshot
 	{
-		UTexture2D* Texture = nullptr;
 		int32 SizeX = 0;
 		int32 SizeY = 0;
 		int32 NumMips = 0;
 		ETextureSourceFormat Format = TSF_Invalid;
 		TArray<TArray64<uint8>> MipData;
 
-		bool Capture(UTexture2D* InTexture)
+		bool Capture(UTexture2D* Texture)
 		{
-			if (InTexture == nullptr)
+			if (Texture == nullptr)
 			{
 				return false;
 			}
-			FTextureSource& Source = InTexture->Source;
-			Texture = InTexture;
+
+			Texture->WaitForPendingInitOrStreaming();
+			FTextureSource& Source = Texture->Source;
+			if (!Source.IsValid()
+				|| Source.GetNumBlocks() != 1
+				|| Source.GetNumLayers() != 1
+				|| Source.GetNumSlices() != 1
+				|| Source.GetNumMips() <= 0
+				|| Source.GetFormat() == TSF_Invalid)
+			{
+				return false;
+			}
+
 			SizeX = Source.GetSizeX();
 			SizeY = Source.GetSizeY();
 			NumMips = Source.GetNumMips();
@@ -43,7 +54,8 @@ namespace
 			MipData.SetNum(NumMips);
 			for (int32 MipIndex = 0; MipIndex < NumMips; ++MipIndex)
 			{
-				if (!Source.GetMipData(MipData[MipIndex], 0, 0, MipIndex))
+				if (!Source.GetMipData(MipData[MipIndex], 0, 0, MipIndex)
+					|| MipData[MipIndex].Num() <= 0)
 				{
 					return false;
 				}
@@ -51,27 +63,89 @@ namespace
 			return true;
 		}
 
-		void Restore() const
+		bool ApplyTo(UTexture2D* Texture) const
 		{
-			if (Texture == nullptr)
+			if (Texture == nullptr
+				|| SizeX <= 0
+				|| SizeY <= 0
+				|| NumMips <= 0
+				|| Format == TSF_Invalid
+				|| MipData.Num() != NumMips)
 			{
-				return;
+				return false;
 			}
+
+			Texture->WaitForPendingInitOrStreaming();
 			Texture->Modify();
+			Texture->PreEditChange(nullptr);
 			Texture->Source.Init(SizeX, SizeY, 1, NumMips, Format, nullptr);
+			bool bSuccess = true;
 			for (int32 MipIndex = 0; MipIndex < NumMips; ++MipIndex)
 			{
-				uint8* DestMip = Texture->Source.LockMip(0, 0, MipIndex);
-				if (DestMip != nullptr && MipData.IsValidIndex(MipIndex))
+				const TArray64<uint8>& Bytes = MipData[MipIndex];
+				if (Texture->Source.CalcMipSize(0, 0, MipIndex) != Bytes.Num())
 				{
-					const TArray64<uint8>& Bytes = MipData[MipIndex];
-					FMemory::Memcpy(DestMip, Bytes.GetData(), Bytes.Num());
+					bSuccess = false;
+					break;
 				}
+				uint8* DestMip = Texture->Source.LockMip(0, 0, MipIndex);
+				if (DestMip == nullptr)
+				{
+					bSuccess = false;
+					break;
+				}
+				FMemory::Memcpy(DestMip, Bytes.GetData(), Bytes.Num());
 				Texture->Source.UnlockMip(0, 0, MipIndex);
 			}
 			Texture->PostEditChange();
+			return bSuccess;
 		}
 	};
+
+	struct FExistingPageTextureBackup
+	{
+		UTexture2D* Texture = nullptr;
+		FPageTextureSourceSnapshot Source;
+
+		bool Capture(UTexture2D* InTexture)
+		{
+			Texture = InTexture;
+			return Source.Capture(InTexture);
+		}
+
+		bool Restore() const
+		{
+			return Source.ApplyTo(Texture);
+		}
+	};
+
+	struct FStagedPageTexture
+	{
+		int32 PageId = INDEX_NONE;
+		FString SourceFilename;
+		FName TargetName;
+		UObject* TargetParent = nullptr;
+		UTexture2D* ExistingTexture = nullptr;
+		UTexture2D* StagedTexture = nullptr;
+		UTexture2D* FinalTexture = nullptr;
+		FPageTextureSourceSnapshot StagedSource;
+	};
+
+	void DiscardTextureObject(UTexture2D* Texture)
+	{
+		if (Texture == nullptr)
+		{
+			return;
+		}
+
+		Texture->ClearFlags(RF_Public | RF_Standalone | RF_Transactional);
+		Texture->Rename(
+			nullptr,
+			GetTransientPackage(),
+			REN_DontCreateRedirectors | REN_DoNotDirty | REN_NonTransactional
+		);
+		Texture->MarkAsGarbage();
+	}
 
 	void ReportParseMessages(const FBMFontParseResult& ParseResult)
 	{
@@ -344,32 +418,80 @@ UBMFontAsset* UBMFontFactory::ImportFromFile(
 	}
 
 	TMap<int32, TObjectPtr<UTexture2D>> ExistingTextures;
+	TArray<UTexture2D*> ObsoleteGeneratedTextures;
+	TSet<int32> IncomingPageIds;
+	for (const FBMFontPage& Page : ParseResult.Data.Pages)
+	{
+		IncomingPageIds.Add(Page.Id);
+	}
 	if (ExistingAsset != nullptr)
 	{
 		for (const FBMFontPage& Page : ExistingAsset->FontData.Pages)
 		{
 			ExistingTextures.Add(Page.Id, Page.Texture);
+			const FName GeneratedTextureName(*ObjectTools::SanitizeObjectName(
+				FString::Printf(TEXT("%s_Page_%d"), *InName.ToString(), Page.Id)
+			));
+			if (!IncomingPageIds.Contains(Page.Id)
+				&& Page.Texture != nullptr
+				&& Page.Texture->GetOuter() == InParent
+				&& Page.Texture->GetFName() == GeneratedTextureName)
+			{
+				ObsoleteGeneratedTextures.AddUnique(Page.Texture);
+			}
 		}
 	}
 
-	TArray<FPageTextureBackup> TextureBackups;
-	const auto RestoreTextureBackups = [&TextureBackups]()
+	const EObjectFlags TextureFlags = static_cast<EObjectFlags>(
+		(Flags & (RF_Public | RF_Standalone | RF_Transient)) | RF_Transactional
+	);
+	TArray<FStagedPageTexture> StagedPages;
+	StagedPages.Reserve(ParseResult.Data.Pages.Num());
+
+	const auto DiscardStagedPages = [&StagedPages]()
 	{
-		for (const FPageTextureBackup& Backup : TextureBackups)
+		for (FStagedPageTexture& StagedPage : StagedPages)
 		{
-			Backup.Restore();
+			DiscardTextureObject(StagedPage.StagedTexture);
+			StagedPage.StagedTexture = nullptr;
 		}
 	};
 
-	for (FBMFontPage& Page : ParseResult.Data.Pages)
+	// Stage and decode every page without touching the destination package. This also
+	// establishes that every staged source can be copied before the commit phase begins.
+	for (const FBMFontPage& Page : ParseResult.Data.Pages)
 	{
 		const FString* PageFilename = PageFiles.Find(Page.Id);
 		if (PageFilename == nullptr)
 		{
+			DiscardStagedPages();
 			return nullptr;
 		}
 
 		UTexture2D* ExistingTexture = ExistingTextures.FindRef(Page.Id);
+		const FName GeneratedTextureName(*ObjectTools::SanitizeObjectName(
+			FString::Printf(TEXT("%s_Page_%d"), *InName.ToString(), Page.Id)
+		));
+		if (ExistingTexture == nullptr)
+		{
+			if (UObject* ExistingObject = StaticFindObjectFast(UObject::StaticClass(), InParent, GeneratedTextureName))
+			{
+				ExistingTexture = Cast<UTexture2D>(ExistingObject);
+				if (ExistingTexture == nullptr)
+				{
+					DiscardStagedPages();
+					UE_LOG(
+						LogUnrealBMFont,
+						Error,
+						TEXT("Cannot import BMFont page %d because '%s' is already used by a non-texture object."),
+						Page.Id,
+						*ExistingObject->GetPathName()
+					);
+					return nullptr;
+				}
+			}
+		}
+
 		if (ParseResult.Data.Common.bPacked && ExistingTexture != nullptr && ExistingTexture->SRGB)
 		{
 			UE_LOG(
@@ -380,50 +502,155 @@ UBMFontAsset* UBMFontFactory::ImportFromFile(
 				Page.Id
 			);
 		}
-		UObject* TextureParent = ExistingTexture != nullptr ? ExistingTexture->GetOuter() : InParent;
-		const FName TextureName = ExistingTexture != nullptr
-			? ExistingTexture->GetFName()
-			: FName(*ObjectTools::SanitizeObjectName(
-				FString::Printf(TEXT("%s_Page_%d"), *InName.ToString(), Page.Id)
-			));
 
-		// Overwriting an existing texture is destructive; snapshot its source first so a
-		// later page failure can roll back instead of leaving mixed texture/glyph state.
-		if (ExistingTexture != nullptr)
-		{
-			FPageTextureBackup& Backup = TextureBackups.AddDefaulted_GetRef();
-			if (!Backup.Capture(ExistingTexture))
-			{
-				TextureBackups.Reset();
-				UE_LOG(
-					LogUnrealBMFont,
-					Error,
-					TEXT("Failed to snapshot BMFont page texture %s before reimport; aborting to keep the asset consistent."),
-					*ExistingTexture->GetName()
-				);
-				return nullptr;
-			}
-		}
+		FStagedPageTexture& StagedPage = StagedPages.AddDefaulted_GetRef();
+		StagedPage.PageId = Page.Id;
+		StagedPage.SourceFilename = *PageFilename;
+		StagedPage.TargetParent = ExistingTexture != nullptr ? ExistingTexture->GetOuter() : InParent;
+		StagedPage.TargetName = ExistingTexture != nullptr ? ExistingTexture->GetFName() : GeneratedTextureName;
+		StagedPage.ExistingTexture = ExistingTexture;
 
-		const EObjectFlags TextureFlags = static_cast<EObjectFlags>(
-			(Flags & (RF_Public | RF_Standalone | RF_Transient)) | RF_Transactional
+		const FName StageName = MakeUniqueObjectName(
+			GetTransientPackage(),
+			UTexture2D::StaticClass(),
+			TEXT("BMFontPageStage")
 		);
-		Page.Texture = ImportPageTexture(
-			TextureParent,
-			TextureName,
-			TextureFlags,
+		StagedPage.StagedTexture = ImportPageTexture(
+			GetTransientPackage(),
+			StageName,
+			TextureFlags | RF_Transient,
 			*PageFilename,
 			Warn,
 			bOutOperationCanceled,
-			ExistingTexture == nullptr,
+			true,
 			ParseResult.Data.Common.bPacked
 		);
-		if (bOutOperationCanceled || Page.Texture == nullptr)
+		if (bOutOperationCanceled
+			|| StagedPage.StagedTexture == nullptr
+			|| !StagedPage.StagedSource.Capture(StagedPage.StagedTexture))
 		{
-			RestoreTextureBackups();
+			DiscardStagedPages();
 			UE_LOG(LogUnrealBMFont, Error, TEXT("Failed to import BMFont page texture: %s"), **PageFilename);
 			return nullptr;
 		}
+	}
+
+	// Snapshot every existing destination before committing even the first page. A bad
+	// later destination can therefore never leave earlier pages overwritten.
+	TArray<FExistingPageTextureBackup> TextureBackups;
+	for (const FStagedPageTexture& StagedPage : StagedPages)
+	{
+		if (StagedPage.ExistingTexture == nullptr)
+		{
+			continue;
+		}
+
+		FExistingPageTextureBackup& Backup = TextureBackups.AddDefaulted_GetRef();
+		if (!Backup.Capture(StagedPage.ExistingTexture))
+		{
+			DiscardStagedPages();
+			UE_LOG(
+				LogUnrealBMFont,
+				Error,
+				TEXT("Failed to snapshot BMFont page texture %s before reimport; no destination texture was changed."),
+				*StagedPage.ExistingTexture->GetName()
+			);
+			return nullptr;
+		}
+	}
+
+	const auto RestoreTextureBackups = [&TextureBackups]()
+	{
+		bool bRestoredAll = true;
+		for (const FExistingPageTextureBackup& Backup : TextureBackups)
+		{
+			bRestoredAll = Backup.Restore() && bRestoredAll;
+		}
+		return bRestoredAll;
+	};
+	const auto DiscardNewTextures = [&StagedPages]()
+	{
+		for (FStagedPageTexture& StagedPage : StagedPages)
+		{
+			if (StagedPage.ExistingTexture == nullptr)
+			{
+				DiscardTextureObject(StagedPage.FinalTexture);
+				StagedPage.FinalTexture = nullptr;
+			}
+		}
+	};
+	const auto RollBackCommit = [&]()
+	{
+		const bool bRestoredAll = RestoreTextureBackups();
+		DiscardNewTextures();
+		DiscardStagedPages();
+		if (!bRestoredAll)
+		{
+			UE_LOG(LogUnrealBMFont, Error, TEXT("BMFont reimport rollback could not restore every page texture."));
+		}
+	};
+
+	// Create all new destination objects before modifying existing ones. Any failure here
+	// can still be cleaned up without a source rollback.
+	for (FStagedPageTexture& StagedPage : StagedPages)
+	{
+		if (StagedPage.ExistingTexture != nullptr)
+		{
+			StagedPage.FinalTexture = StagedPage.ExistingTexture;
+			continue;
+		}
+
+		StagedPage.FinalTexture = Cast<UTexture2D>(StaticDuplicateObject(
+			StagedPage.StagedTexture,
+			StagedPage.TargetParent,
+			StagedPage.TargetName,
+			static_cast<EObjectFlags>(RF_AllFlags & ~RF_Transient)
+		));
+		if (StagedPage.FinalTexture == nullptr)
+		{
+			DiscardNewTextures();
+			DiscardStagedPages();
+			UE_LOG(
+				LogUnrealBMFont,
+				Error,
+				TEXT("Failed to create BMFont page texture: %s"),
+				*StagedPage.TargetName.ToString()
+			);
+			return nullptr;
+		}
+		StagedPage.FinalTexture->SetFlags(TextureFlags);
+	}
+
+	for (FStagedPageTexture& StagedPage : StagedPages)
+	{
+		if (StagedPage.ExistingTexture != nullptr
+			&& !StagedPage.StagedSource.ApplyTo(StagedPage.ExistingTexture))
+		{
+			RollBackCommit();
+			UE_LOG(
+				LogUnrealBMFont,
+				Error,
+				TEXT("Failed to commit BMFont page texture: %s"),
+				*StagedPage.TargetName.ToString()
+			);
+			return nullptr;
+		}
+	}
+
+	for (int32 PageIndex = 0; PageIndex < ParseResult.Data.Pages.Num(); ++PageIndex)
+	{
+		FStagedPageTexture& StagedPage = StagedPages[PageIndex];
+		UTexture2D* Texture = StagedPage.FinalTexture;
+		if (Texture->AssetImportData == nullptr)
+		{
+			Texture->AssetImportData = NewObject<UAssetImportData>(Texture, TEXT("AssetImportData"));
+		}
+		Texture->AssetImportData->Update(StagedPage.SourceFilename);
+		if (StagedPage.ExistingTexture == nullptr)
+		{
+			Texture->PostEditChange();
+		}
+		ParseResult.Data.Pages[PageIndex].Texture = Texture;
 	}
 
 	UBMFontAsset* Asset = ExistingAsset;
@@ -433,6 +660,7 @@ UBMFontAsset* UBMFontFactory::ImportFromFile(
 	}
 	if (Asset == nullptr)
 	{
+		RollBackCommit();
 		return nullptr;
 	}
 
@@ -442,17 +670,50 @@ UBMFontAsset* UBMFontFactory::ImportFromFile(
 		Asset->AssetImportData = NewObject<UAssetImportData>(Asset, TEXT("AssetImportData"));
 	}
 	Asset->AssetImportData->Update(Filename);
-	if (Asset->PackedRenderMaterial.IsNull())
-	{
-		// Serialize the default material path so the reference enters the asset registry;
-		// a CDO-default value would be delta-serialized away and never cook.
-		Asset->PackedRenderMaterial = TSoftObjectPtr<UMaterialInterface>(
-			FSoftObjectPath(BMFontRendering::GetDefaultPackedMaterialPath())
-		);
-	}
 	Asset->SetFontData(MoveTemp(ParseResult.Data));
 	Asset->MarkPackageDirty();
 	Asset->PostEditChange();
+
+	for (UTexture2D* ObsoleteTexture : ObsoleteGeneratedTextures)
+	{
+		bool bIsReferenced = false;
+		bool bIsReferencedByUndo = false;
+		ObjectTools::GatherObjectReferencersForDeletion(
+			ObsoleteTexture,
+			bIsReferenced,
+			bIsReferencedByUndo,
+			nullptr,
+			true
+		);
+		if (!bIsReferenced && !bIsReferencedByUndo)
+		{
+			ObsoleteTexture->MarkPackageDirty();
+			if (!ObsoleteTexture->HasAnyFlags(RF_Transient))
+			{
+				FAssetRegistryModule::AssetDeleted(ObsoleteTexture);
+			}
+			DiscardTextureObject(ObsoleteTexture);
+		}
+		else
+		{
+			UE_LOG(
+				LogUnrealBMFont,
+				Display,
+				TEXT("Retained obsolete generated page texture %s because it is still referenced%s."),
+				*ObsoleteTexture->GetPathName(),
+				bIsReferencedByUndo ? TEXT(" by the undo buffer") : TEXT("")
+			);
+		}
+	}
+
+	for (FStagedPageTexture& StagedPage : StagedPages)
+	{
+		if (StagedPage.ExistingTexture == nullptr && !StagedPage.FinalTexture->HasAnyFlags(RF_Transient))
+		{
+			FAssetRegistryModule::AssetCreated(StagedPage.FinalTexture);
+		}
+	}
+	DiscardStagedPages();
 	return Asset;
 }
 

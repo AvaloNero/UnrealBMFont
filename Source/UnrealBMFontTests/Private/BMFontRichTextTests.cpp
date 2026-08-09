@@ -76,6 +76,15 @@ bool FBMFontRichTextPlainRunsTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Letter spacing widens the plain run"), DesiredSize.X, 19.0, 0.5);
 
 	Widget->SetLetterSpacing(0.0f);
+	Widget->SetText(FText::FromString(TEXT("A")));
+	Widget->SetShadowOffset(FVector2D(-2.0f, -3.0f));
+	Widget->SetShadowColorAndOpacity(FLinearColor::Black);
+	DesiredSize = GetRichTextDesiredSize(Widget);
+	TestEqual(TEXT("Negative shadow expands the run width"), DesiredSize.X, 12.0, 0.5);
+	TestEqual(TEXT("Negative shadow expands the run height"), DesiredSize.Y, 23.0, 0.5);
+	Widget->SetShadowOffset(FVector2D::ZeroVector);
+	Widget->SetShadowColorAndOpacity(FLinearColor::Transparent);
+
 	Widget->SetText(FText::FromString(FString::Chr(TEXT('A')) + FString::Chr(0x4E2D)));
 	DesiredSize = GetRichTextDesiredSize(Widget);
 	TestEqual(TEXT("Missing codepoints fall back to the fallback glyph advance"), DesiredSize.X, 16.0, 0.5);
