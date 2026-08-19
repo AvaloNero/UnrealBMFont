@@ -1,0 +1,9 @@
+info face="Packed Sample" size=10 unicode=1 smooth=0 padding=0,0,0,0 spacing=0,0
+common lineHeight=20 base=15 scaleW=32 scaleH=32 pages=1 packed=1 alphaChnl=3 redChnl=3 greenChnl=0 blueChnl=3
+page id=0 file="Packed.png"
+chars count=3
+char id=65 x=0 y=0 width=8 height=10 xoffset=0 yoffset=0 xadvance=10 page=0 chnl=2
+char id=86 x=8 y=0 width=8 height=10 xoffset=0 yoffset=0 xadvance=10 page=0 chnl=2
+char id=65533 x=16 y=0 width=8 height=10 xoffset=0 yoffset=0 xadvance=6 page=0 chnl=2
+kernings count=1
+kerning first=65 second=86 amount=-2

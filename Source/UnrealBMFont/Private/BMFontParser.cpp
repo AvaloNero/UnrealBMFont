@@ -508,7 +508,7 @@ namespace
 		{
 			AddWarning(
 				Result,
-				TEXT("The descriptor uses packed texture channels. Parsing is supported, but rendering requires a channel-aware UI material.")
+				TEXT("The descriptor uses packed texture channels. Glyphs render through the channel-extraction material; outline channels are not composited separately.")
 			);
 		}
 	}

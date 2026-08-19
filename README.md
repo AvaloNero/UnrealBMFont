@@ -6,7 +6,7 @@
 
 Unreal BMFont imports AngelCode BMFont descriptors and renders their bitmap glyphs in Slate and UMG. The core widget is a purpose-built plain-text bitmap-font counterpart to `UTextBlock`, with a compact layout and rendering pipeline tailored to BMFont assets.
 
-The plugin is currently beta (`0.1.0`). Its runtime API is small and usable, but compatibility beyond the verified matrix is not claimed yet.
+The plugin is currently beta (`0.2.0`). Its runtime API is small and usable, but compatibility beyond the verified matrix is not claimed yet.
 
 [简体中文](README.zh-CN.md) · [Format support](Docs/FormatSupport.md) · [Architecture](Docs/Architecture.md) · [Testing](Docs/Testing.md)
 
@@ -17,9 +17,12 @@ The plugin is currently beta (`0.1.0`). Its runtime API is small and usable, but
 - Imports text, XML, and binary v3 `.fnt` descriptors.
 - Imports and references the descriptor's real page files, including multi-page atlases.
 - Preserves Unicode code points, glyph offsets/advances, line metrics, and kerning pairs.
-- Provides `UBMFontAsset`, `UBMFontText`, and the lower-level `SBMFontText` Slate widget.
+- Provides `UBMFontAsset`, `UBMFontText`, the lower-level `SBMFontText` Slate widget, and the `UBMFontRichTextBlock` rich text adapter.
+- Renders packed-channel atlases through a channel-extraction UI material, honoring each glyph's `char.chnl` mask.
+- Supports BMFont runs inside Rich Text, including empty tags and ellipsis overflow policies.
 - Supports wrapping, justification, margins, line-height control, letter spacing, tint, shadow, fallback glyphs, text bindings, and pixel snapping.
 - Supports asset reimport while preserving user-edited texture filtering.
+- Ships editor thumbnails and a read-only font/atlas inspector with glyph rectangles.
 - Keeps runtime, editor/importer, and automation-test modules separate.
 - Validates malformed descriptors, unsafe page paths, atlas bounds, and atlas dimensions with actionable logs.
 
@@ -57,7 +60,7 @@ The repository includes a tiny original fixture under [`Samples/Minimal`](Sample
 
 ## Deliberate scope
 
-BMFont stores already-rasterized glyph rectangles. It is not a font shaping engine. The current renderer is suitable for Latin, CJK, digits, icons, and other left-to-right precomposed glyph sets. It does not implement bidirectional layout, OpenType shaping, ligatures, or a Rich Text decorator API. Packed-channel atlases are parsed for diagnostics but rejected by the importer because the widget does not yet provide a channel-aware material path.
+BMFont stores already-rasterized glyph rectangles. It is not a font shaping engine. The current renderer is suitable for Latin, CJK, digits, icons, and other left-to-right precomposed glyph sets. It does not implement bidirectional layout, OpenType shaping, or ligatures. The rich text adapter measures each run independently, so kerning does not cross tag boundaries. Packed-channel atlases render through the bundled channel-extraction material; outline channels are not composited separately.
 
 These boundaries are explicit in [Format support](Docs/FormatSupport.md) and tracked in [Roadmap](ROADMAP.md).
 

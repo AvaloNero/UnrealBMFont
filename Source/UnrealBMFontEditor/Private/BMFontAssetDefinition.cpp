@@ -2,6 +2,8 @@
 
 #include "BMFontAssetDefinition.h"
 
+#include "AssetDefinition.h"
+#include "AssetEditor/BMFontAssetEditor.h"
 #include "BMFontAsset.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBMFontAssetDefinition"
@@ -31,6 +33,16 @@ TConstArrayView<FAssetCategoryPath> UBMFontAssetDefinition::GetAssetCategories()
 		)
 	};
 	return Categories;
+}
+
+EAssetCommandResult UBMFontAssetDefinition::OpenAssets(const FAssetOpenArgs& OpenArgs) const
+{
+	TArray<UBMFontAsset*> Assets = OpenArgs.LoadObjects<UBMFontAsset>();
+	for (UBMFontAsset* Asset : Assets)
+	{
+		FBMFontAssetEditor::Open(Asset, OpenArgs);
+	}
+	return Assets.IsEmpty() ? EAssetCommandResult::Unhandled : EAssetCommandResult::Handled;
 }
 
 #undef LOCTEXT_NAMESPACE

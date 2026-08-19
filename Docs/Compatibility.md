@@ -6,8 +6,10 @@
 | Host platform | Windows 11, Win64 | Linux, macOS |
 | Targets | UnrealEditor Development, UnrealGame Development, UnrealGame Shipping | Consoles and mobile |
 | Runtime smoke | Headless Editor automation and packaged Development launch with NullRHI | Packaged Shipping launch; interactive screenshot comparison |
+| Widget rendering | GPU screenshot tests against committed ground truth, reference GPU/driver | Cross-vendor GPU variance beyond the comparison tolerance |
 | Descriptor formats | Text, compact XML, binary v3 | Binary v1/v2 |
 | Page images | PNG | Every format accepted by TextureFactory |
+| Packed atlases | Glyph coverage extraction via the bundled UI material | Separate outline-channel compositing |
 
 The Runtime module uses platform-neutral Engine, Slate, SlateCore, UMG, and XmlParser APIs, but portability is a hypothesis until the target is compiled and exercised in CI.
 

@@ -7,6 +7,8 @@
 #include "BMFontAsset.generated.h"
 
 class UAssetImportData;
+class UMaterialInstanceDynamic;
+class UMaterialInterface;
 class FBMFontLayout;
 
 /** Imported BMFont descriptor data and hard references to every atlas page. */
@@ -26,6 +28,13 @@ public:
 	TObjectPtr<UAssetImportData> AssetImportData;
 #endif
 
+	/**
+	 * Material that extracts glyph coverage from packed-channel atlas pages.
+	 * Defaults to the plugin's M_BMFontPacked; ignored for non-packed descriptors.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "BMFont", AdvancedDisplay, NoClear)
+	TSoftObjectPtr<UMaterialInterface> PackedRenderMaterial;
+
 	UFUNCTION(BlueprintPure, Category = "BMFont")
 	bool HasGlyph(int32 Codepoint) const;
 
@@ -42,6 +51,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "BMFont")
 	UTexture2D* GetPageTexture(int32 PageId) const;
 
+	/**
+	 * Returns the Slate brush resource for a page and glyph channel: the page texture
+	 * itself, or a cached channel-extraction material instance when the descriptor uses
+	 * packed channels.
+	 */
+	UObject* GetPageRenderResource(int32 PageId, int32 GlyphChannel = 15);
+
 	const FBMFontGlyph* FindGlyph(int32 Codepoint) const;
 	const FBMFontPage* FindPage(int32 PageId) const;
 	UFUNCTION(BlueprintPure, Category = "BMFont")
@@ -49,6 +65,7 @@ public:
 	uint32 GetDataRevision() const;
 	void SetFontData(FBMFontData InFontData);
 
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual void PostLoad() override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -58,7 +75,15 @@ private:
 	friend class FBMFontLayout;
 
 	void RebuildLookup();
+	void ClearRenderResourceCache();
+	void EnsurePackedRenderMaterialReference();
 
 	TMap<uint64, int32> KerningLookup;
 	uint32 DataRevision = 1;
+
+	UPROPERTY(Transient)
+	TMap<uint64, TObjectPtr<UMaterialInstanceDynamic>> PageMaterialCache;
+
+	TMap<uint64, TWeakObjectPtr<UTexture2D>> PageMaterialSources;
+	bool bWarnedMissingPackedMaterial = false;
 };

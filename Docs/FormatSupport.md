@@ -11,7 +11,7 @@
 | Multiple pages | Supported | Page IDs are resolved to their declared files and textures. |
 | Unicode scalar IDs | Supported | Supplementary-plane code points are decoded as one glyph. |
 | Kerning pairs | Supported | Applied before tracking. |
-| Packed channels | Parsed only | Import is rejected until a channel-aware rendering material is available. |
+| Packed channels | Supported | Pages render through a channel-extraction material (see below). |
 
 ## Import validation
 
@@ -25,6 +25,20 @@
 ## Image formats
 
 Page decoding is delegated to Unreal's `UTextureFactory`. PNG is covered by automated import tests. Other formats supported by a given Unreal installation may work but are not part of the current compatibility claim.
+
+## Packed-channel rendering
+
+When `common.packed=1`, glyphs render through dynamic instances of the plugin's `M_BMFontPacked` UI material instead of the raw texture. Render resources are cached by page ID and the glyph's `char.chnl` mask, so glyphs that share one atlas rectangle but occupy different channels remain independent. The material recovers coverage by combining `char.chnl` with `alphaChnl`/`redChnl`/`greenChnl`/`blueChnl`:
+
+- `char.chnl` uses the BMFont bit mask: blue `1`, green `2`, red `4`, alpha `8`, or all channels `15`.
+- Within that mask, a channel marked **Glyph** or **Glyph + Outline** supplies sampled coverage.
+- If the selected channel is marked **One**, coverage is the constant 1 (solid glyph rectangles).
+- If channel metadata is missing or contradictory, the renderer still honors the glyph's channel mask. A descriptor with no usable glyph mask or metadata falls back to alpha.
+
+Outline channels are not composited separately; the outline appearance of packed atlases is flattened into whichever channels carry glyph coverage. Per-asset overrides are possible through the asset's **Packed Render Material** property, which must keep the `FontAtlas`, `ChannelWeights`, and `ChannelBias` parameter contract.
+
+Packed page textures import with sRGB disabled, because the channels encode coverage rather than display color. Reimport preserves an existing texture's settings, so a texture first imported from a non-packed descriptor keeps sRGB enabled and triggers a warning; disable sRGB manually in that case.
+
 
 ## Text behavior
 

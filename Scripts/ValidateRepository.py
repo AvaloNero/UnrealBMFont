@@ -43,6 +43,10 @@ REQUIRED_FILES = {
     "Docs/ReleaseChecklist.md",
     "Docs/Testing.md",
     "Resources/Icon128.png",
+    "Samples/GroundTruth/PackedAtlas.png",
+    "Samples/GroundTruth/PlainGlyphs.png",
+    "Samples/GroundTruth/RichTextEllipsis.png",
+    "Samples/GroundTruth/TintShadowWrap.png",
     "Samples/Minimal/Minimal.fnt",
     "Samples/Minimal/Minimal.png",
     "UnrealBMFont.uplugin",
@@ -83,6 +87,10 @@ def main() -> int:
 
     if descriptor.get("FriendlyName") != "Unreal BMFont":
         fail(errors, "FriendlyName must be 'Unreal BMFont'")
+    if descriptor.get("Version") != 2:
+        fail(errors, "Version must be 2 for the 0.2.0 release")
+    if descriptor.get("VersionName") != "0.2.0":
+        fail(errors, "VersionName must be '0.2.0'")
     if descriptor.get("EnabledByDefault") is not False:
         fail(
             errors,
@@ -127,6 +135,10 @@ def main() -> int:
 
     for relative_path, expected in (
         ("Resources/Icon128.png", (128, 128)),
+        ("Samples/GroundTruth/PackedAtlas.png", (64, 32)),
+        ("Samples/GroundTruth/PlainGlyphs.png", (64, 32)),
+        ("Samples/GroundTruth/RichTextEllipsis.png", (24, 32)),
+        ("Samples/GroundTruth/TintShadowWrap.png", (64, 48)),
         ("Samples/Minimal/Minimal.png", (64, 16)),
     ):
         try:
