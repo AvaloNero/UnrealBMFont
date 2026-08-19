@@ -169,6 +169,97 @@ bool FBMFontFactoryImportAndReimportTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FBMFontFactoryTextureNameCollisionTest,
+	"UnrealBMFont.Editor.TextureNameCollision",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBMFontFactoryTextureNameCollisionTest::RunTest(const FString& Parameters)
+{
+	const FString UniqueId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	const FString TempDirectory = FPaths::Combine(
+		FPaths::ProjectIntermediateDir(),
+		TEXT("UnrealBMFontTests"),
+		UniqueId
+	);
+	TestTrue(TEXT("Temporary source directory can be created"), IFileManager::Get().MakeDirectory(*TempDirectory, true));
+	ON_SCOPE_EXIT
+	{
+		IFileManager::Get().DeleteDirectory(*TempDirectory, false, true);
+	};
+
+	TArray<FColor> Pixels;
+	Pixels.Init(FColor::White, 4 * 4);
+	TArray<uint8> PngBytes;
+	FImageUtils::ThumbnailCompressImageArray(4, 4, Pixels, PngBytes);
+	const FString AtlasFilename = FPaths::Combine(TempDirectory, TEXT("atlas.png"));
+	if (!TestTrue(TEXT("Collision PNG fixture can be written"), FFileHelper::SaveArrayToFile(PngBytes, *AtlasFilename)))
+	{
+		return false;
+	}
+
+	const FString DescriptorFilename = FPaths::Combine(TempDirectory, TEXT("texture-collision.fnt"));
+	const FString Descriptor =
+		TEXT("info face=\"Texture Collision\" size=4 unicode=1 smooth=0 padding=0,0,0,0 spacing=0,0\n")
+		TEXT("common lineHeight=4 base=4 scaleW=4 scaleH=4 pages=1 packed=0 alphaChnl=0 redChnl=4 greenChnl=4 blueChnl=4\n")
+		TEXT("page id=0 file=\"atlas.png\"\n")
+		TEXT("chars count=1\n")
+		TEXT("char id=65 x=0 y=0 width=4 height=4 xoffset=0 yoffset=0 xadvance=4 page=0 chnl=15\n");
+	if (!TestTrue(
+		TEXT("Collision descriptor fixture can be written"),
+		FFileHelper::SaveStringToFile(
+			Descriptor,
+			*DescriptorFilename,
+			FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)))
+	{
+		return false;
+	}
+
+	UPackage* Package = CreatePackage(*FString::Printf(TEXT("/Engine/Transient/UnrealBMFontCollision_%s"), *UniqueId));
+	Package->SetFlags(RF_Transient);
+	UTexture2D* ExistingTexture = NewObject<UTexture2D>(
+		Package,
+		TEXT("CollisionFont_Page_0"),
+		RF_Public | RF_Standalone | RF_Transient | RF_Transactional
+	);
+	TArray64<uint8> OriginalTextureBytes;
+	OriginalTextureBytes.Init(0x2A, 4 * 4 * 4);
+	ExistingTexture->PreEditChange(nullptr);
+	ExistingTexture->Source.Init(4, 4, 1, 1, TSF_BGRA8, OriginalTextureBytes.GetData());
+	ExistingTexture->PostEditChange();
+
+	AddExpectedError(
+		TEXT("page textures are only reused when referenced by the asset being reimported"),
+		EAutomationExpectedErrorFlags::Contains,
+		1
+	);
+	UBMFontFactory* Factory = NewObject<UBMFontFactory>();
+	bool bOperationCanceled = false;
+	UObject* ImportedObject = Factory->FactoryCreateFile(
+		UBMFontAsset::StaticClass(),
+		Package,
+		TEXT("CollisionFont"),
+		RF_Public | RF_Standalone | RF_Transient,
+		DescriptorFilename,
+		TEXT(""),
+		GWarn,
+		bOperationCanceled
+	);
+
+	TestFalse(TEXT("Name-collision import is not cancelled"), bOperationCanceled);
+	TestNull(TEXT("Name-collision import fails instead of claiming an unrelated texture"), ImportedObject);
+	TestNull(
+		TEXT("Name-collision import does not create a partial BMFont asset"),
+		StaticFindObjectFast(UBMFontAsset::StaticClass(), Package, TEXT("CollisionFont"))
+	);
+	TestEqual(TEXT("Unrelated texture source width is preserved"), ExistingTexture->Source.GetSizeX(), int64{4});
+	TestEqual(TEXT("Unrelated texture source height is preserved"), ExistingTexture->Source.GetSizeY(), int64{4});
+	TArray64<uint8> PreservedTextureBytes;
+	TestTrue(TEXT("Unrelated texture source remains readable"), ExistingTexture->Source.GetMipData(PreservedTextureBytes, 0));
+	TestTrue(TEXT("Unrelated texture bytes are preserved"), PreservedTextureBytes == OriginalTextureBytes);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FBMFontFactoryAtomicReimportTest,
 	"UnrealBMFont.Editor.AtomicReimport",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

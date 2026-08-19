@@ -476,19 +476,15 @@ UBMFontAsset* UBMFontFactory::ImportFromFile(
 		{
 			if (UObject* ExistingObject = StaticFindObjectFast(UObject::StaticClass(), InParent, GeneratedTextureName))
 			{
-				ExistingTexture = Cast<UTexture2D>(ExistingObject);
-				if (ExistingTexture == nullptr)
-				{
-					DiscardStagedPages();
-					UE_LOG(
-						LogUnrealBMFont,
-						Error,
-						TEXT("Cannot import BMFont page %d because '%s' is already used by a non-texture object."),
-						Page.Id,
-						*ExistingObject->GetPathName()
-					);
-					return nullptr;
-				}
+				DiscardStagedPages();
+				UE_LOG(
+					LogUnrealBMFont,
+					Error,
+					TEXT("Cannot import BMFont page %d because '%s' already exists; page textures are only reused when referenced by the asset being reimported."),
+					Page.Id,
+					*ExistingObject->GetPathName()
+				);
+				return nullptr;
 			}
 		}
 

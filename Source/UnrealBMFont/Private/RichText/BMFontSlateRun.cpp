@@ -7,6 +7,7 @@
 #include "BMFontAsset.h"
 #include "Containers/StringConv.h"
 #include "Framework/Text/DefaultLayoutBlock.h"
+#include "Framework/Text/RunUtils.h"
 #include "Framework/Text/SlateTextUtils.h"
 #include "Rendering/DrawElements.h"
 #include "Rendering/DrawElementTextOverflowArgs.h"
@@ -163,11 +164,24 @@ int32 FBMFontSlateRun::GetTextIndexAt(
 {
 	EnsureItems();
 	const FBMFontRunStyle& Style = StyleBlock->Style;
+	const FVector2D BlockOffset = Block->GetLocationOffset();
+	const FVector2D BlockSize = Block->GetSize();
+	const bool bContainsPoint =
+		Location.X >= BlockOffset.X
+		&& Location.X < BlockOffset.X + BlockSize.X
+		&& Location.Y >= BlockOffset.Y
+		&& Location.Y < BlockOffset.Y + BlockSize.Y;
+	if (!bContainsPoint)
+	{
+		return INDEX_NONE;
+	}
+
 	const FTextRange BlockRange = Block->GetTextRange();
 	const int32 BeginItem = FindItemIndex(BlockRange.BeginIndex);
 	const int32 EndItem = FindItemIndex(BlockRange.EndIndex);
 
-	const float LocalX = Location.X - Block->GetLocationOffset().X;
+	const float LocalX = Location.X - BlockOffset.X;
+	int32 HitIndex = BlockRange.EndIndex;
 	float PenX = 0.0f;
 	for (int32 Index = BeginItem; Index < EndItem; ++Index)
 	{
@@ -178,15 +192,23 @@ int32 FBMFontSlateRun::GetTextIndexAt(
 		const float ItemWidth = Items[Index].Advance * Scale;
 		if (LocalX < PenX + ItemWidth * 0.5f)
 		{
-			return Items[Index].TextStart;
+			HitIndex = Items[Index].TextStart;
+			break;
 		}
 		PenX += ItemWidth;
 		if (LocalX < PenX)
 		{
-			return Items[Index].TextEnd;
+			HitIndex = Items[Index].TextEnd;
+			break;
 		}
 	}
-	return BlockRange.EndIndex;
+
+	if (OutHitPoint != nullptr)
+	{
+		const FLayoutBlockTextContext BlockTextContext = Block->GetTextContext();
+		*OutHitPoint = RunUtils::CalculateTextHitPoint(HitIndex, BlockRange, BlockTextContext.TextDirection);
+	}
+	return HitIndex;
 }
 
 FVector2D FBMFontSlateRun::GetLocationAt(const TSharedRef<ILayoutBlock>& Block, const int32 Offset, const float Scale) const
