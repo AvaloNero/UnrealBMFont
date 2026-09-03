@@ -47,7 +47,9 @@ namespace
 		File.Append(Block);
 	}
 
-	TArray<uint8> MakeBinaryDescriptor(const bool bAddDuplicateKerning = false)
+	TArray<uint8> MakeBinaryDescriptor(
+		const bool bAddDuplicateKerning = false,
+		const bool bAddSecondGlyph = false)
 	{
 		TArray<uint8> File = { 'B', 'M', 'F', 3 };
 
@@ -95,6 +97,19 @@ namespace
 		AddInt16(Chars, 9);
 		AddUInt8(Chars, 0);
 		AddUInt8(Chars, 15);
+		if (bAddSecondGlyph)
+		{
+			AddUInt32(Chars, 66);
+			AddUInt16(Chars, 12);
+			AddUInt16(Chars, 3);
+			AddUInt16(Chars, 8);
+			AddUInt16(Chars, 10);
+			AddInt16(Chars, 0);
+			AddInt16(Chars, 2);
+			AddInt16(Chars, 9);
+			AddUInt8(Chars, 0);
+			AddUInt8(Chars, 15);
+		}
 		AddBlock(File, 4, Chars);
 
 		TArray<uint8> Kernings;
@@ -250,6 +265,419 @@ bool FBMFontInvalidDescriptorTest::RunTest(const FString& Parameters)
 	const FBMFontParseResult Result = FBMFontParser::ParseText(Descriptor);
 	TestFalse(TEXT("Invalid atlas is rejected"), Result.IsSuccess());
 	TestTrue(TEXT("Validation emits errors"), Result.HasErrors());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FBMFontAtlasOverflowValidationTest,
+	"UnrealBMFont.Parser.AtlasOverflowValidation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBMFontAtlasOverflowValidationTest::RunTest(const FString& Parameters)
+{
+	const FString Descriptor =
+		TEXT("common lineHeight=16 base=12 scaleW=64 scaleH=64 pages=1 packed=0\n")
+		TEXT("page id=0 file=\"atlas.png\"\n")
+		TEXT("chars count=1\n")
+		TEXT("char id=65 x=2147483646 y=0 width=8 height=8 xoffset=0 yoffset=0 xadvance=8 page=0 chnl=15\n");
+
+	const FBMFontParseResult Result = FBMFontParser::ParseText(Descriptor);
+	TestFalse(TEXT("Overflowing atlas rectangle is rejected"), Result.IsSuccess());
+	TestTrue(
+		TEXT("Overflowing atlas rectangle reports the bounds error"),
+		Result.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Severity == EBMFontParseMessageSeverity::Error
+					&& Message.Message.Contains(TEXT("outside the declared atlas"));
+			}
+		)
+	);
+
+	FBMFontCommon Common;
+	Common.ScaleWidth = 64;
+	Common.ScaleHeight = 64;
+	FBMFontGlyph OverflowingGlyph;
+	OverflowingGlyph.X = MAX_int32 - 1;
+	OverflowingGlyph.Y = 0;
+	OverflowingGlyph.Width = 8;
+	OverflowingGlyph.Height = 8;
+	const FBox2D SafeUvRegion = OverflowingGlyph.GetUvRegion(Common);
+	TestEqual(TEXT("Invalid public UV query returns a zero minimum"), SafeUvRegion.Min, FVector2D::ZeroVector);
+	TestEqual(TEXT("Invalid public UV query returns a zero maximum"), SafeUvRegion.Max, FVector2D::ZeroVector);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FBMFontParserResourceLimitsTest,
+	"UnrealBMFont.Parser.ResourceLimits",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBMFontParserResourceLimitsTest::RunTest(const FString& Parameters)
+{
+	FBMFontParserLimits Limits;
+	Limits.MaxGlyphs = 1;
+	const FString TextDescriptor =
+		TEXT("common lineHeight=16 base=12 scaleW=64 scaleH=64 pages=1 packed=0\n")
+		TEXT("page id=0 file=\"atlas.png\"\n")
+		TEXT("chars count=2\n")
+		TEXT("char id=65 x=0 y=0 width=8 height=8 xoffset=0 yoffset=0 xadvance=8 page=0 chnl=15\n")
+		TEXT("char id=66 x=8 y=0 width=8 height=8 xoffset=0 yoffset=0 xadvance=8 page=0 chnl=15\n");
+	const FBMFontParseResult TextResult = FBMFontParser::ParseText(TextDescriptor, Limits);
+	TestFalse(TEXT("Text glyph record limit is enforced"), TextResult.IsSuccess());
+	TestTrue(
+		TEXT("Text glyph record limit emits an actionable diagnostic"),
+		TextResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("limit of 1 glyph record"));
+			}
+		)
+	);
+
+	const FBMFontParseResult BinaryResult = FBMFontParser::ParseBinary(
+		MakeBinaryDescriptor(false, true),
+		Limits
+	);
+	TestFalse(TEXT("Binary glyph record limit is enforced"), BinaryResult.IsSuccess());
+	TestTrue(
+		TEXT("Binary glyph record limit emits an actionable diagnostic"),
+		BinaryResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("binary chars blocks"));
+			}
+		)
+	);
+
+	FBMFontParserLimits ByteLimits;
+	ByteLimits.MaxDescriptorBytes = 3;
+	const TArray<uint8> OversizedBytes = { 'a', 'b', 'c', 'd' };
+	const FBMFontParseResult ByteResult = FBMFontParser::Parse(OversizedBytes, ByteLimits);
+	TestFalse(TEXT("Descriptor byte limit is enforced before format detection"), ByteResult.IsSuccess());
+	TestTrue(TEXT("Descriptor byte limit emits an error"), ByteResult.HasErrors());
+
+	FBMFontParserLimits PageLimits;
+	PageLimits.MaxPages = 1;
+	const FString TwoPageDescriptor =
+		TEXT("common lineHeight=16 base=12 scaleW=64 scaleH=64 pages=2 packed=0\n")
+		TEXT("page id=0 file=\"atlas-0.png\"\n")
+		TEXT("page id=1 file=\"atlas-1.png\"\n")
+		TEXT("chars count=1\n")
+		TEXT("char id=65 x=0 y=0 width=8 height=8 xoffset=0 yoffset=0 xadvance=8 page=0 chnl=15\n");
+	const FBMFontParseResult PageResult = FBMFontParser::ParseText(TwoPageDescriptor, PageLimits);
+	TestFalse(TEXT("Page record limit is enforced"), PageResult.IsSuccess());
+	TestTrue(
+		TEXT("Page record limit emits an actionable diagnostic"),
+		PageResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("limit of 1 page record"));
+			}
+		)
+	);
+
+	const FString SparsePageIdDescriptor =
+		TEXT("common lineHeight=16 base=12 scaleW=64 scaleH=64 pages=1 packed=0\n")
+		TEXT("page id=4096 file=\"atlas.png\"\n")
+		TEXT("chars count=1\n")
+		TEXT("char id=65 x=0 y=0 width=8 height=8 xoffset=0 yoffset=0 xadvance=8 page=4096 chnl=15\n");
+	const FBMFontParseResult SparsePageIdResult = FBMFontParser::ParseText(SparsePageIdDescriptor);
+	TestTrue(TEXT("Page record limits do not restrict non-negative page ID values"), SparsePageIdResult.IsSuccess());
+
+	FBMFontParserLimits KerningLimits;
+	KerningLimits.MaxKerningPairs = 1;
+	const FString TwoKerningDescriptor =
+		TEXT("common lineHeight=16 base=12 scaleW=64 scaleH=64 pages=1 packed=0\n")
+		TEXT("page id=0 file=\"atlas.png\"\n")
+		TEXT("chars count=1\n")
+		TEXT("char id=65 x=0 y=0 width=8 height=8 xoffset=0 yoffset=0 xadvance=8 page=0 chnl=15\n")
+		TEXT("kernings count=2\n")
+		TEXT("kerning first=65 second=65 amount=-1\n")
+		TEXT("kerning first=65 second=66 amount=-2\n");
+	const FBMFontParseResult KerningResult = FBMFontParser::ParseText(TwoKerningDescriptor, KerningLimits);
+	TestFalse(TEXT("Kerning record limit is enforced"), KerningResult.IsSuccess());
+	TestTrue(
+		TEXT("Kerning record limit emits an actionable diagnostic"),
+		KerningResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("limit of 1 kerning record"));
+			}
+		)
+	);
+
+	FBMFontParserLimits AtlasLimits;
+	AtlasLimits.MaxAtlasDimension = 32;
+	const FString AtlasDescriptor =
+		TEXT("common lineHeight=16 base=12 scaleW=64 scaleH=64 pages=1 packed=0\n")
+		TEXT("page id=0 file=\"atlas.png\"\n")
+		TEXT("chars count=1\n")
+		TEXT("char id=65 x=0 y=0 width=8 height=8 xoffset=0 yoffset=0 xadvance=8 page=0 chnl=15\n");
+	const FBMFontParseResult AtlasResult = FBMFontParser::ParseText(AtlasDescriptor, AtlasLimits);
+	TestFalse(TEXT("Atlas dimension limit is enforced"), AtlasResult.IsSuccess());
+	TestTrue(
+		TEXT("Atlas dimension limit emits an actionable diagnostic"),
+		AtlasResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("32-pixel dimension limit"));
+			}
+		)
+	);
+
+	FBMFontParserLimits TotalAtlasLimits;
+	TotalAtlasLimits.MaxTotalAtlasPixels = 4096;
+	const FBMFontParseResult TotalAtlasResult = FBMFontParser::ParseText(TwoPageDescriptor, TotalAtlasLimits);
+	TestFalse(TEXT("Total multi-page atlas pixel limit is enforced"), TotalAtlasResult.IsSuccess());
+	TestTrue(
+		TEXT("Total atlas pixel limit emits an actionable diagnostic"),
+		TotalAtlasResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("total limit of 4096 pixel"));
+			}
+		)
+	);
+
+	FBMFontParserLimits TextShapeLimits;
+	TextShapeLimits.MaxTextLines = 2;
+	const FBMFontParseResult TextShapeResult = FBMFontParser::ParseText(AtlasDescriptor, TextShapeLimits);
+	TestFalse(TEXT("Text line limit is enforced before tokenization"), TextShapeResult.IsSuccess());
+	TestTrue(
+		TEXT("Text line limit emits an actionable diagnostic"),
+		TextShapeResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("2-line limit"));
+			}
+		)
+	);
+
+	FBMFontParserLimits FileNameLimits;
+	FileNameLimits.MaxPageFileCharacters = 4;
+	const FBMFontParseResult FileNameResult = FBMFontParser::ParseBinary(MakeBinaryDescriptor(), FileNameLimits);
+	TestFalse(TEXT("Binary page file-name limit is enforced during decoding"), FileNameResult.IsSuccess());
+	TestTrue(
+		TEXT("Binary page file-name limit emits an actionable diagnostic"),
+		FileNameResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("page file name"));
+			}
+		)
+	);
+
+	FBMFontParserLimits InvalidLimits;
+	InvalidLimits.MaxPages = 0;
+	const FBMFontParseResult InvalidLimitsResult = FBMFontParser::ParseText(AtlasDescriptor, InvalidLimits);
+	TestFalse(TEXT("Invalid parser limits are rejected"), InvalidLimitsResult.IsSuccess());
+	TestTrue(
+		TEXT("Invalid parser limits emit a configuration diagnostic"),
+		InvalidLimitsResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("limits are invalid"));
+			}
+		)
+	);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FBMFontXmlDoctypeRejectionTest,
+	"UnrealBMFont.Parser.XmlDoctypeRejection",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBMFontXmlDoctypeRejectionTest::RunTest(const FString& Parameters)
+{
+	const FString Xml = TEXT("<!DOCTYPE font [<!ENTITY x \"atlas.png\">]><font/>");
+	const FBMFontParseResult Result = FBMFontParser::ParseXml(Xml);
+	TestFalse(TEXT("DOCTYPE input is rejected"), Result.IsSuccess());
+	TestTrue(
+		TEXT("DOCTYPE rejection is explicit"),
+		Result.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("DOCTYPE"));
+			}
+		)
+	);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FBMFontXmlStructuralLimitsTest,
+	"UnrealBMFont.Parser.XmlStructuralLimits",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBMFontXmlStructuralLimitsTest::RunTest(const FString& Parameters)
+{
+	FBMFontParserLimits ElementLimits;
+	ElementLimits.MaxXmlElements = 3;
+	const FBMFontParseResult ElementResult = FBMFontParser::ParseXml(
+		TEXT("<font><!-- Author's font --><junk/><junk/><junk/></font>"),
+		ElementLimits
+	);
+	TestFalse(TEXT("An apostrophe in a comment cannot bypass the XML element limit"), ElementResult.IsSuccess());
+	TestTrue(
+		TEXT("XML element limit emits an actionable diagnostic"),
+		ElementResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("limit of 3 element"));
+			}
+		)
+	);
+
+	FBMFontParserLimits AttributeLimits;
+	AttributeLimits.MaxXmlAttributes = 1;
+	const FBMFontParseResult AttributeResult = FBMFontParser::ParseXml(
+		TEXT("<font first=\"1\" second='2'/>"),
+		AttributeLimits
+	);
+	TestFalse(TEXT("XML attribute limit is enforced before DOM parsing"), AttributeResult.IsSuccess());
+	TestTrue(
+		TEXT("XML attribute limit emits an actionable diagnostic"),
+		AttributeResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("limit of 1 attribute"));
+			}
+		)
+	);
+
+	FBMFontParserLimits IgnoredMarkupLimits;
+	IgnoredMarkupLimits.MaxXmlElements = 1;
+	IgnoredMarkupLimits.MaxXmlAttributes = 1;
+	const FBMFontParseResult IgnoredMarkupResult = FBMFontParser::ParseXml(
+		TEXT("<font><!-- fake=\"value\" <junk attr='x'/> --><![CDATA[ fake=\"value\" <junk attr='x'/> ]]></font>"),
+		IgnoredMarkupLimits
+	);
+	TestFalse(
+		TEXT("Comments and CDATA do not consume XML structural limits"),
+		IgnoredMarkupResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("XML descriptor exceeds the configured limit"));
+			}
+		)
+	);
+
+	for (const FString MalformedXml : {
+		FString(TEXT("<font><!-- unterminated")),
+		FString(TEXT("<font><![CDATA[unterminated")),
+		FString(TEXT("<?xml version='1.0'<font/>")),
+		FString(TEXT("<font face='unterminated></font>"))
+	})
+	{
+		const FBMFontParseResult MalformedResult = FBMFontParser::ParseXml(MalformedXml);
+		TestFalse(TEXT("Unterminated XML markup is rejected before DOM parsing"), MalformedResult.IsSuccess());
+		TestTrue(
+			TEXT("Unterminated XML markup emits an actionable diagnostic"),
+			MalformedResult.Messages.ContainsByPredicate(
+				[](const FBMFontParseMessage& Message)
+				{
+					return Message.Message.Contains(TEXT("unterminated"));
+				}
+			)
+		);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FBMFontMalformedCorpusTest,
+	"UnrealBMFont.Parser.MalformedCorpus",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBMFontMalformedCorpusTest::RunTest(const FString& Parameters)
+{
+	const TArray<uint8> ValidBinary = MakeBinaryDescriptor(true, true);
+	for (int32 PrefixLength = 0; PrefixLength < ValidBinary.Num(); ++PrefixLength)
+	{
+		const FBMFontParseResult Result = FBMFontParser::ParseBinary(
+			TArrayView<const uint8>(ValidBinary.GetData(), PrefixLength)
+		);
+		TestTrue(
+			FString::Printf(TEXT("Truncated binary prefix %d keeps diagnostics bounded"), PrefixLength),
+			Result.Messages.Num() <= 256
+		);
+	}
+
+	uint32 State = 0xC001D00D;
+	for (int32 CaseIndex = 0; CaseIndex < 128; ++CaseIndex)
+	{
+		State = State * 1664525u + 1013904223u;
+		const int32 ByteCount = static_cast<int32>(State % 513u);
+		TArray<uint8> Bytes;
+		Bytes.SetNumUninitialized(ByteCount);
+		for (uint8& Byte : Bytes)
+		{
+			State = State * 1664525u + 1013904223u;
+			Byte = static_cast<uint8>(State >> 24);
+		}
+
+		const FBMFontParseResult Result = FBMFontParser::Parse(Bytes);
+		TestTrue(
+			FString::Printf(TEXT("Fixed-seed malformed case %d keeps diagnostics bounded"), CaseIndex),
+			Result.Messages.Num() <= 256
+		);
+	}
+
+	const TArray<uint8> OversizedBlock = {
+		'B', 'M', 'F', 3,
+		4, 0xFF, 0xFF, 0xFF, 0x7F
+	};
+	const FBMFontParseResult OversizedBlockResult = FBMFontParser::ParseBinary(OversizedBlock);
+	TestFalse(TEXT("A block with an impossible declared size is rejected"), OversizedBlockResult.IsSuccess());
+	TestTrue(
+		TEXT("Impossible binary block size reports an end-of-file error"),
+		OversizedBlockResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("extends past the end"));
+			}
+		)
+	);
+
+	FString WarningFlood =
+		TEXT("common lineHeight=16 base=12 scaleW=64 scaleH=64 pages=1 packed=0\n")
+		TEXT("page id=0 file=\"atlas.png\"\n")
+		TEXT("chars count=1\n")
+		TEXT("char id=65 x=0 y=0 width=8 height=8 xoffset=0 yoffset=0 xadvance=8 page=0 chnl=15\n");
+	for (int32 Index = 0; Index < 400; ++Index)
+	{
+		WarningFlood += FString::Printf(TEXT("unknown%d value=1\n"), Index);
+	}
+	const FBMFontParseResult WarningFloodResult = FBMFontParser::ParseText(WarningFlood);
+	TestTrue(TEXT("Warning-only diagnostic flooding remains successful"), WarningFloodResult.IsSuccess());
+	TestEqual(TEXT("Diagnostic flooding is capped"), WarningFloodResult.Messages.Num(), 256);
+	TestTrue(
+		TEXT("Diagnostic cap reports warning suppression without inventing an error"),
+		WarningFloodResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("additional messages were suppressed"))
+					&& Message.Severity == EBMFontParseMessageSeverity::Warning;
+			}
+		)
+	);
+
+	const FString ErrorAfterWarningFlood = WarningFlood
+		+ TEXT("char id=66 x=invalid y=0 width=8 height=8 xoffset=0 yoffset=0 xadvance=8 page=0 chnl=15\n");
+	const FBMFontParseResult SuppressedErrorResult = FBMFontParser::ParseText(ErrorAfterWarningFlood);
+	TestTrue(TEXT("An error after the warning cap is still retained"), SuppressedErrorResult.HasErrors());
+	TestTrue(
+		TEXT("The suppression entry is promoted when a suppressed diagnostic is an error"),
+		SuppressedErrorResult.Messages.ContainsByPredicate(
+			[](const FBMFontParseMessage& Message)
+			{
+				return Message.Message.Contains(TEXT("additional messages were suppressed"))
+					&& Message.Severity == EBMFontParseMessageSeverity::Error;
+			}
+		)
+	);
 	return true;
 }
 

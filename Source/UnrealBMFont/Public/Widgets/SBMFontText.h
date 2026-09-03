@@ -73,6 +73,9 @@ public:
 	FText GetText() const;
 
 	const FBMFontLayoutResult& GetCachedLayout(float AvailableWidth) const;
+#if WITH_DEV_AUTOMATION_TESTS
+	int32 GetCachedGlyphBrushCountForTesting(float AvailableWidth) const;
+#endif
 
 protected:
 	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override;
@@ -120,8 +123,10 @@ private:
 	mutable uint32 CachedDataRevision = 0;
 	mutable FBMFontLayoutResult CachedLayout;
 	mutable float LastAllottedWidth = 0.0f;
+	mutable uint64 LayoutRevision = 0;
 
 	mutable TMap<int32, FSlateBrush> GlyphBrushes;
 	mutable TWeakObjectPtr<UBMFontAsset> BrushFontAsset;
 	mutable uint32 BrushDataRevision = 0;
+	mutable uint64 BrushLayoutRevision = MAX_uint64;
 };

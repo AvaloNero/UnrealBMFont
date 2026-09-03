@@ -183,6 +183,15 @@ const FBMFontLayoutResult& SBMFontText::GetCachedLayout(const float AvailableWid
 	return CachedLayout;
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+int32 SBMFontText::GetCachedGlyphBrushCountForTesting(const float AvailableWidth) const
+{
+	EnsureLayout(AvailableWidth);
+	EnsureBrushes();
+	return GlyphBrushes.Num();
+}
+#endif
+
 FVector2D SBMFontText::ComputeDesiredSize(float LayoutScaleMultiplier) const
 {
 	const float AvailableWidth = WrapTextAt > 0.0f ? WrapTextAt : LastAllottedWidth;
@@ -348,6 +357,7 @@ void SBMFontText::EnsureLayout(const float AvailableWidth) const
 		Settings.WrappingPolicy = WrappingPolicy;
 		FBMFontLayout::Build(*Font, CachedText, Settings, CachedLayout);
 	}
+	++LayoutRevision;
 	bLayoutDirty = false;
 }
 
@@ -355,7 +365,8 @@ void SBMFontText::EnsureBrushes() const
 {
 	UBMFontAsset* Font = FontAsset.Get();
 	const uint32 CurrentRevision = Font != nullptr ? Font->GetDataRevision() : 0;
-	if (BrushFontAsset.Get() == Font && BrushDataRevision == CurrentRevision)
+	const bool bFontCacheChanged = BrushFontAsset.Get() != Font || BrushDataRevision != CurrentRevision;
+	if (!bFontCacheChanged && BrushLayoutRevision == LayoutRevision)
 	{
 		return;
 	}
@@ -363,24 +374,35 @@ void SBMFontText::EnsureBrushes() const
 	GlyphBrushes.Reset();
 	BrushFontAsset = Font;
 	BrushDataRevision = CurrentRevision;
+	BrushLayoutRevision = LayoutRevision;
 	if (Font == nullptr || !Font->FontData.IsValid())
 	{
 		return;
 	}
 
-	for (const TPair<int32, FBMFontGlyph>& Entry : Font->FontData.Glyphs)
+	for (const FBMFontLayoutGlyph& LayoutGlyph : CachedLayout.Glyphs)
 	{
-		UObject* Resource = Font->GetPageRenderResource(Entry.Value.Page, Entry.Value.Channel);
+		if (GlyphBrushes.Contains(LayoutGlyph.GlyphCodepoint))
+		{
+			continue;
+		}
+		const FBMFontGlyph* Glyph = Font->FindGlyph(LayoutGlyph.GlyphCodepoint);
+		if (Glyph == nullptr || Glyph->Width <= 0 || Glyph->Height <= 0)
+		{
+			continue;
+		}
+
+		UObject* Resource = Font->GetPageRenderResource(Glyph->Page, Glyph->Channel);
 		if (Resource == nullptr)
 		{
 			continue;
 		}
 
-		FSlateBrush& Brush = GlyphBrushes.Add(Entry.Key);
+		FSlateBrush& Brush = GlyphBrushes.Add(LayoutGlyph.GlyphCodepoint);
 		Brush.DrawAs = ESlateBrushDrawType::Image;
 		Brush.SetResourceObject(Resource);
-		Brush.SetImageSize(FVector2D(Entry.Value.Width, Entry.Value.Height));
-		Brush.SetUVRegion(Entry.Value.GetUvRegion(Font->FontData.Common));
+		Brush.SetImageSize(FVector2D(Glyph->Width, Glyph->Height));
+		Brush.SetUVRegion(Glyph->GetUvRegion(Font->FontData.Common));
 	}
 }
 

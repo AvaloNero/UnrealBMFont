@@ -10,6 +10,9 @@
 namespace
 {
 	using FBMFontAttributes = TMap<FString, FString>;
+	constexpr int32 MaxDiagnosticMessages = 256;
+	constexpr TCHAR DiagnosticSuppressionMessage[] =
+		TEXT("Parser diagnostic limit reached; additional messages were suppressed.");
 
 	void AddMessage(
 		FBMFontParseResult& Result,
@@ -17,6 +20,28 @@ namespace
 		const FString& Message,
 		const int32 Line = INDEX_NONE)
 	{
+		if (Result.Messages.Num() >= MaxDiagnosticMessages)
+		{
+			// Preserve success for warning-only descriptors, but never hide a later
+			// error just because earlier warnings filled the diagnostic budget.
+			if (Severity == EBMFontParseMessageSeverity::Error
+				&& !Result.Messages.IsEmpty()
+				&& Result.Messages.Last().Message == DiagnosticSuppressionMessage)
+			{
+				Result.Messages.Last().Severity = EBMFontParseMessageSeverity::Error;
+				Result.Messages.Last().Line = Line;
+			}
+			return;
+		}
+		if (Result.Messages.Num() == MaxDiagnosticMessages - 1)
+		{
+			FBMFontParseMessage& LimitEntry = Result.Messages.AddDefaulted_GetRef();
+			LimitEntry.Severity = Severity;
+			LimitEntry.Line = Line;
+			LimitEntry.Message = DiagnosticSuppressionMessage;
+			return;
+		}
+
 		FBMFontParseMessage& Entry = Result.Messages.AddDefaulted_GetRef();
 		Entry.Severity = Severity;
 		Entry.Line = Line;
@@ -31,6 +56,341 @@ namespace
 	void AddWarning(FBMFontParseResult& Result, const FString& Message, const int32 Line = INDEX_NONE)
 	{
 		AddMessage(Result, EBMFontParseMessageSeverity::Warning, Message, Line);
+	}
+
+	bool ValidateLimits(const FBMFontParserLimits& Limits, FBMFontParseResult& Result)
+	{
+		if (Limits.IsValid())
+		{
+			return true;
+		}
+
+		AddError(Result, TEXT("BMFont parser limits are invalid."));
+		return false;
+	}
+
+	bool ValidateDescriptorBytes(
+		const int64 ByteCount,
+		const FBMFontParserLimits& Limits,
+		FBMFontParseResult& Result)
+	{
+		if (ByteCount <= Limits.MaxDescriptorBytes)
+		{
+			return true;
+		}
+
+		AddError(
+			Result,
+			FString::Printf(
+				TEXT("The BMFont descriptor is %lld byte(s); the configured limit is %lld."),
+				ByteCount,
+				Limits.MaxDescriptorBytes
+			)
+		);
+		return false;
+	}
+
+	bool ValidateDescriptorCharacters(
+		const int32 CharacterCount,
+		const FBMFontParserLimits& Limits,
+		FBMFontParseResult& Result)
+	{
+		if (CharacterCount <= Limits.MaxDescriptorCharacters)
+		{
+			return true;
+		}
+
+		AddError(
+			Result,
+			FString::Printf(
+				TEXT("The BMFont descriptor is %d character(s); the configured limit is %d."),
+				CharacterCount,
+				Limits.MaxDescriptorCharacters
+			)
+		);
+		return false;
+	}
+
+	bool ValidateTextShape(
+		const FString& DescriptorText,
+		const FBMFontParserLimits& Limits,
+		FBMFontParseResult& Result)
+	{
+		int32 LineCount = DescriptorText.IsEmpty() ? 0 : 1;
+		int32 LineLength = 0;
+		for (int32 Index = 0; Index < DescriptorText.Len(); ++Index)
+		{
+			const TCHAR Character = DescriptorText[Index];
+			if (Character == TEXT('\r') || Character == TEXT('\n'))
+			{
+				if (LineLength > Limits.MaxTextLineCharacters)
+				{
+					AddError(
+						Result,
+						FString::Printf(
+							TEXT("A BMFont text line exceeds the configured %d-character limit."),
+							Limits.MaxTextLineCharacters
+						)
+					);
+					return false;
+				}
+				if (Character == TEXT('\r')
+					&& Index + 1 < DescriptorText.Len()
+					&& DescriptorText[Index + 1] == TEXT('\n'))
+				{
+					++Index;
+				}
+				++LineCount;
+				LineLength = 0;
+				if (LineCount > Limits.MaxTextLines)
+				{
+					AddError(
+						Result,
+						FString::Printf(
+							TEXT("The BMFont text descriptor exceeds the configured %d-line limit."),
+							Limits.MaxTextLines
+						)
+					);
+					return false;
+				}
+			}
+			else
+			{
+				++LineLength;
+			}
+		}
+
+		if (LineLength > Limits.MaxTextLineCharacters)
+		{
+			AddError(
+				Result,
+				FString::Printf(
+					TEXT("A BMFont text line exceeds the configured %d-character limit."),
+					Limits.MaxTextLineCharacters
+				)
+			);
+			return false;
+		}
+		return true;
+	}
+
+	bool StartsWithAt(const FString& Text, const int32 Index, const TCHAR* Prefix)
+	{
+		const int32 PrefixLength = FCString::Strlen(Prefix);
+		return Index >= 0
+			&& PrefixLength <= Text.Len() - Index
+			&& FCString::Strncmp(*Text + Index, Prefix, PrefixLength) == 0;
+	}
+
+	bool ValidateXmlShape(
+		const FString& DescriptorXml,
+		const FBMFontParserLimits& Limits,
+		FBMFontParseResult& Result)
+	{
+		int32 ElementCount = 0;
+		int32 AttributeCount = 0;
+		int32 Index = 0;
+		while (Index < DescriptorXml.Len())
+		{
+			if (DescriptorXml[Index] != TEXT('<'))
+			{
+				++Index;
+				continue;
+			}
+
+			if (StartsWithAt(DescriptorXml, Index, TEXT("<!--")))
+			{
+				const int32 CommentEnd = DescriptorXml.Find(
+					TEXT("-->"),
+					ESearchCase::CaseSensitive,
+					ESearchDir::FromStart,
+					Index + 4
+				);
+				if (CommentEnd == INDEX_NONE)
+				{
+					AddError(Result, TEXT("Invalid BMFont XML: unterminated comment."));
+					return false;
+				}
+				Index = CommentEnd + 3;
+				continue;
+			}
+
+			if (StartsWithAt(DescriptorXml, Index, TEXT("<![CDATA[")))
+			{
+				const int32 CDataEnd = DescriptorXml.Find(
+					TEXT("]]>"),
+					ESearchCase::CaseSensitive,
+					ESearchDir::FromStart,
+					Index + 9
+				);
+				if (CDataEnd == INDEX_NONE)
+				{
+					AddError(Result, TEXT("Invalid BMFont XML: unterminated CDATA section."));
+					return false;
+				}
+				Index = CDataEnd + 3;
+				continue;
+			}
+
+			if (StartsWithAt(DescriptorXml, Index, TEXT("<?")))
+			{
+				const int32 ProcessingInstructionEnd = DescriptorXml.Find(
+					TEXT("?>"),
+					ESearchCase::CaseSensitive,
+					ESearchDir::FromStart,
+					Index + 2
+				);
+				if (ProcessingInstructionEnd == INDEX_NONE)
+				{
+					AddError(Result, TEXT("Invalid BMFont XML: unterminated processing instruction."));
+					return false;
+				}
+				Index = ProcessingInstructionEnd + 2;
+				continue;
+			}
+
+			if (StartsWithAt(DescriptorXml, Index, TEXT("</")))
+			{
+				const int32 ClosingTagEnd = DescriptorXml.Find(
+					TEXT(">"),
+					ESearchCase::CaseSensitive,
+					ESearchDir::FromStart,
+					Index + 2
+				);
+				if (ClosingTagEnd == INDEX_NONE)
+				{
+					AddError(Result, TEXT("Invalid BMFont XML: unterminated closing tag."));
+					return false;
+				}
+				Index = ClosingTagEnd + 1;
+				continue;
+			}
+
+			if (StartsWithAt(DescriptorXml, Index, TEXT("<!")))
+			{
+				AddError(Result, TEXT("Invalid BMFont XML: unsupported markup declaration."));
+				return false;
+			}
+
+			++ElementCount;
+			if (ElementCount > Limits.MaxXmlElements)
+			{
+				AddError(
+					Result,
+					FString::Printf(
+						TEXT("The BMFont XML descriptor exceeds the configured limit of %d element(s)."),
+						Limits.MaxXmlElements
+					)
+				);
+				return false;
+			}
+
+			TCHAR QuoteCharacter = 0;
+			bool bTagClosed = false;
+			for (++Index; Index < DescriptorXml.Len(); ++Index)
+			{
+				const TCHAR Character = DescriptorXml[Index];
+				if (QuoteCharacter != 0)
+				{
+					if (Character == QuoteCharacter)
+					{
+						QuoteCharacter = 0;
+					}
+					continue;
+				}
+
+				if (Character == TEXT('"') || Character == TEXT('\''))
+				{
+					QuoteCharacter = Character;
+				}
+				else if (Character == TEXT('='))
+				{
+					++AttributeCount;
+					if (AttributeCount > Limits.MaxXmlAttributes)
+					{
+						AddError(
+							Result,
+							FString::Printf(
+								TEXT("The BMFont XML descriptor exceeds the configured limit of %d attribute(s)."),
+								Limits.MaxXmlAttributes
+							)
+						);
+						return false;
+					}
+				}
+				else if (Character == TEXT('>'))
+				{
+					++Index;
+					bTagClosed = true;
+					break;
+				}
+				else if (Character == TEXT('<'))
+				{
+					AddError(Result, TEXT("Invalid BMFont XML: nested '<' before the start tag was closed."));
+					return false;
+				}
+			}
+
+			if (!bTagClosed)
+			{
+				AddError(
+					Result,
+					QuoteCharacter != 0
+						? TEXT("Invalid BMFont XML: unterminated attribute quote.")
+						: TEXT("Invalid BMFont XML: unterminated start tag.")
+				);
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	bool ConsumeRecord(
+		int32& RecordCount,
+		const int32 MaxRecords,
+		const TCHAR* RecordName,
+		FBMFontParseResult& Result,
+		const int32 Line = INDEX_NONE)
+	{
+		if (RecordCount >= MaxRecords)
+		{
+			AddError(
+				Result,
+				FString::Printf(
+					TEXT("The BMFont descriptor exceeds the configured limit of %d %s record(s)."),
+					MaxRecords,
+					RecordName
+				),
+				Line
+			);
+			return false;
+		}
+
+		++RecordCount;
+		return true;
+	}
+
+	void ValidateDeclaredCount(
+		const int32 DeclaredCount,
+		const int32 MaxRecords,
+		const TCHAR* RecordName,
+		FBMFontParseResult& Result,
+		const int32 Line = INDEX_NONE)
+	{
+		if (DeclaredCount < 0 || DeclaredCount > MaxRecords)
+		{
+			AddError(
+				Result,
+				FString::Printf(
+					TEXT("The declared %s count %d is outside the supported range 0..%d."),
+					RecordName,
+					DeclaredCount,
+					MaxRecords
+				),
+				Line
+			);
+		}
 	}
 
 	bool ReadString(
@@ -438,7 +798,7 @@ namespace
 			&& !(Codepoint >= 0xD800 && Codepoint <= 0xDFFF);
 	}
 
-	void ValidateData(FBMFontParseResult& Result)
+	void ValidateData(FBMFontParseResult& Result, const FBMFontParserLimits& Limits)
 	{
 		const FBMFontCommon& Common = Result.Data.Common;
 		if (Common.LineHeight <= 0)
@@ -449,9 +809,59 @@ namespace
 		{
 			AddError(Result, TEXT("common.scaleW and common.scaleH must be greater than zero."));
 		}
+		else
+		{
+			if (Common.ScaleWidth > Limits.MaxAtlasDimension || Common.ScaleHeight > Limits.MaxAtlasDimension)
+			{
+				AddError(
+					Result,
+					FString::Printf(
+						TEXT("The declared atlas size %dx%d exceeds the configured %d-pixel dimension limit."),
+						Common.ScaleWidth,
+						Common.ScaleHeight,
+						Limits.MaxAtlasDimension
+					)
+				);
+			}
+			const int64 AtlasPixels = static_cast<int64>(Common.ScaleWidth) * Common.ScaleHeight;
+			if (AtlasPixels > Limits.MaxAtlasPixelsPerPage)
+			{
+				AddError(
+					Result,
+					FString::Printf(
+						TEXT("Each declared atlas page contains %lld pixel(s); the configured per-page limit is %lld."),
+						AtlasPixels,
+						Limits.MaxAtlasPixelsPerPage
+					)
+				);
+			}
+			if (Common.PageCount > 0
+				&& AtlasPixels > Limits.MaxTotalAtlasPixels / static_cast<int64>(Common.PageCount))
+			{
+				AddError(
+					Result,
+					FString::Printf(
+						TEXT("The declared %d-page atlas exceeds the configured total limit of %lld pixel(s)."),
+						Common.PageCount,
+						Limits.MaxTotalAtlasPixels
+					)
+				);
+			}
+		}
 		if (Common.PageCount <= 0)
 		{
 			AddError(Result, TEXT("common.pages must be greater than zero."));
+		}
+		else if (Common.PageCount > Limits.MaxPages)
+		{
+			AddError(
+				Result,
+				FString::Printf(
+					TEXT("common.pages declares %d page(s); the configured limit is %d."),
+					Common.PageCount,
+					Limits.MaxPages
+				)
+			);
 		}
 		if (Common.PageCount != Result.Data.Pages.Num())
 		{
@@ -473,9 +883,27 @@ namespace
 		for (const FBMFontPage& Page : Result.Data.Pages)
 		{
 			PageIds.Add(Page.Id);
+			if (Page.Id < 0)
+			{
+				AddError(
+					Result,
+					FString::Printf(TEXT("Page id %d must be non-negative."), Page.Id)
+				);
+			}
 			if (Page.File.IsEmpty())
 			{
 				AddError(Result, FString::Printf(TEXT("Page %d has an empty file name."), Page.Id));
+			}
+			else if (Page.File.Len() > Limits.MaxPageFileCharacters)
+			{
+				AddError(
+					Result,
+					FString::Printf(
+						TEXT("Page %d file name exceeds the configured %d-character limit."),
+						Page.Id,
+						Limits.MaxPageFileCharacters
+					)
+				);
 			}
 		}
 
@@ -490,16 +918,37 @@ namespace
 			{
 				AddError(Result, FString::Printf(TEXT("Glyph %d has a negative atlas rectangle."), Glyph.Codepoint));
 			}
+			const int64 GlyphRight = static_cast<int64>(Glyph.X) + static_cast<int64>(Glyph.Width);
+			const int64 GlyphBottom = static_cast<int64>(Glyph.Y) + static_cast<int64>(Glyph.Height);
 			if (Common.ScaleWidth > 0 && Common.ScaleHeight > 0
-				&& (Glyph.X + Glyph.Width > Common.ScaleWidth || Glyph.Y + Glyph.Height > Common.ScaleHeight))
+				&& (GlyphRight > Common.ScaleWidth || GlyphBottom > Common.ScaleHeight))
 			{
 				AddError(Result, FString::Printf(TEXT("Glyph %d lies outside the declared atlas size."), Glyph.Codepoint));
+			}
+			if (Glyph.Channel < 0 || Glyph.Channel > 15)
+			{
+				AddError(Result, FString::Printf(TEXT("Glyph %d has invalid channel mask %d."), Glyph.Codepoint, Glyph.Channel));
 			}
 			if (!PageIds.Contains(Glyph.Page))
 			{
 				AddError(
 					Result,
 					FString::Printf(TEXT("Glyph %d references missing page id %d."), Glyph.Codepoint, Glyph.Page)
+				);
+			}
+		}
+
+		for (const FBMFontKerningPair& Pair : Result.Data.KerningPairs)
+		{
+			if (!IsUnicodeScalarValue(Pair.First) || !IsUnicodeScalarValue(Pair.Second))
+			{
+				AddError(
+					Result,
+					FString::Printf(
+						TEXT("Kerning pair %d/%d contains a non-scalar Unicode value."),
+						Pair.First,
+						Pair.Second
+					)
 				);
 			}
 		}
@@ -578,12 +1027,29 @@ namespace
 			return true;
 		}
 
-		bool ReadUtf8String(FString& OutValue)
+		bool ReadUtf8String(
+			FString& OutValue,
+			const int32 MaxCharacters = MAX_int32,
+			bool* bOutLimitExceeded = nullptr)
 		{
+			if (bOutLimitExceeded != nullptr)
+			{
+				*bOutLimitExceeded = false;
+			}
 			const int32 Start = Offset;
 			while (Offset < Bytes.Num() && Bytes[Offset] != 0)
 			{
 				++Offset;
+				// A UTF-8 scalar occupies at most four bytes. Once this threshold is
+				// crossed, conversion cannot produce a string within the character cap.
+				if (static_cast<int64>(Offset - Start) > static_cast<int64>(MaxCharacters) * 4)
+				{
+					if (bOutLimitExceeded != nullptr)
+					{
+						*bOutLimitExceeded = true;
+					}
+					return false;
+				}
 			}
 			if (Offset >= Bytes.Num())
 			{
@@ -592,6 +1058,14 @@ namespace
 
 			const int32 Length = Offset - Start;
 			const FUTF8ToTCHAR Converted(reinterpret_cast<const ANSICHAR*>(Bytes.GetData() + Start), Length);
+			if (Converted.Length() > MaxCharacters)
+			{
+				if (bOutLimitExceeded != nullptr)
+				{
+					*bOutLimitExceeded = true;
+				}
+				return false;
+			}
 			OutValue = FString(Converted.Length(), Converted.Get());
 			++Offset;
 			return true;
@@ -697,29 +1171,61 @@ namespace
 		Common.BlueChannel = ToChannelContent(BlueChannel);
 	}
 
-	void ParseBinaryPages(FBMFontByteReader& Reader, FBMFontParseResult& Result)
+	void ParseBinaryPages(
+		FBMFontByteReader& Reader,
+		FBMFontParseResult& Result,
+		const FBMFontParserLimits& Limits,
+		int32& PageRecordCount)
 	{
-		int32 PageId = 0;
 		while (Reader.Remaining() > 0)
 		{
-			FBMFontPage Page;
-			Page.Id = PageId++;
-			if (!Reader.ReadUtf8String(Page.File))
+			if (!ConsumeRecord(PageRecordCount, Limits.MaxPages, TEXT("page"), Result))
 			{
-				AddError(Result, TEXT("Binary pages block contains an unterminated file name."));
+				return;
+			}
+			FBMFontPage Page;
+			Page.Id = Result.Data.Pages.Num();
+			bool bFileNameTooLong = false;
+			if (!Reader.ReadUtf8String(Page.File, Limits.MaxPageFileCharacters, &bFileNameTooLong))
+			{
+				AddError(
+					Result,
+					bFileNameTooLong
+						? FString::Printf(
+							TEXT("A binary page file name exceeds the configured %d-character limit."),
+							Limits.MaxPageFileCharacters)
+						: TEXT("Binary pages block contains an unterminated file name.")
+				);
 				return;
 			}
 			Result.Data.Pages.Add(MoveTemp(Page));
 		}
 	}
 
-	void ParseBinaryGlyphs(FBMFontByteReader& Reader, FBMFontParseResult& Result)
+	void ParseBinaryGlyphs(
+		FBMFontByteReader& Reader,
+		FBMFontParseResult& Result,
+		const FBMFontParserLimits& Limits,
+		int32& GlyphRecordCount)
 	{
 		if (Reader.Remaining() % 20 != 0)
 		{
 			AddError(Result, TEXT("Binary chars block size is not divisible by 20."));
 			return;
 		}
+		const int32 BlockRecordCount = Reader.Remaining() / 20;
+		if (static_cast<int64>(GlyphRecordCount) + BlockRecordCount > Limits.MaxGlyphs)
+		{
+			AddError(
+				Result,
+				FString::Printf(
+					TEXT("The binary chars blocks exceed the configured limit of %d glyph record(s)."),
+					Limits.MaxGlyphs
+				)
+			);
+			return;
+		}
+		GlyphRecordCount += BlockRecordCount;
 
 		while (Reader.Remaining() >= 20)
 		{
@@ -766,13 +1272,28 @@ namespace
 	void ParseBinaryKernings(
 		FBMFontByteReader& Reader,
 		FBMFontParseResult& Result,
-		TMap<uint64, int32>& KerningIndices)
+		TMap<uint64, int32>& KerningIndices,
+		const FBMFontParserLimits& Limits,
+		int32& KerningRecordCount)
 	{
 		if (Reader.Remaining() % 10 != 0)
 		{
 			AddError(Result, TEXT("Binary kerning block size is not divisible by 10."));
 			return;
 		}
+		const int32 BlockRecordCount = Reader.Remaining() / 10;
+		if (static_cast<int64>(KerningRecordCount) + BlockRecordCount > Limits.MaxKerningPairs)
+		{
+			AddError(
+				Result,
+				FString::Printf(
+					TEXT("The binary kerning blocks exceed the configured limit of %d kerning record(s)."),
+					Limits.MaxKerningPairs
+				)
+			);
+			return;
+		}
+		KerningRecordCount += BlockRecordCount;
 
 		while (Reader.Remaining() >= 10)
 		{
@@ -792,6 +1313,23 @@ namespace
 	}
 }
 
+bool FBMFontParserLimits::IsValid() const
+{
+	return MaxDescriptorBytes > 0
+		&& MaxDescriptorCharacters > 0
+		&& MaxTextLines > 0
+		&& MaxTextLineCharacters > 0
+		&& MaxXmlElements > 0
+		&& MaxXmlAttributes >= 0
+		&& MaxPages > 0
+		&& MaxGlyphs > 0
+		&& MaxKerningPairs >= 0
+		&& MaxPageFileCharacters > 0
+		&& MaxAtlasDimension > 0
+		&& MaxAtlasPixelsPerPage > 0
+		&& MaxTotalAtlasPixels > 0;
+}
+
 bool FBMFontParseResult::HasErrors() const
 {
 	return Messages.ContainsByPredicate(
@@ -809,15 +1347,27 @@ bool FBMFontParseResult::IsSuccess() const
 
 FBMFontParseResult FBMFontParser::Parse(const TArrayView<const uint8> Bytes)
 {
+	return Parse(Bytes, FBMFontParserLimits());
+}
+
+FBMFontParseResult FBMFontParser::Parse(
+	const TArrayView<const uint8> Bytes,
+	const FBMFontParserLimits& Limits)
+{
+	FBMFontParseResult Result;
+	if (!ValidateLimits(Limits, Result) || !ValidateDescriptorBytes(Bytes.Num(), Limits, Result))
+	{
+		return Result;
+	}
+
 	if (Bytes.Num() >= 4
 		&& Bytes[0] == static_cast<uint8>('B')
 		&& Bytes[1] == static_cast<uint8>('M')
 		&& Bytes[2] == static_cast<uint8>('F'))
 	{
-		return ParseBinary(Bytes);
+		return ParseBinary(Bytes, Limits);
 	}
 
-	FBMFontParseResult Result;
 	if (Bytes.IsEmpty())
 	{
 		AddError(Result, TEXT("The BMFont descriptor is empty."));
@@ -830,16 +1380,29 @@ FBMFontParseResult FBMFontParser::Parse(const TArrayView<const uint8> Bytes)
 	Trimmed.TrimStartInline();
 	if (Trimmed.StartsWith(TEXT("<")))
 	{
-		return ParseXml(DescriptorText);
+		return ParseXml(DescriptorText, Limits);
 	}
 
-	return ParseText(DescriptorText);
+	return ParseText(DescriptorText, Limits);
 }
 
 FBMFontParseResult FBMFontParser::ParseText(const FString& DescriptorText)
 {
+	return ParseText(DescriptorText, FBMFontParserLimits());
+}
+
+FBMFontParseResult FBMFontParser::ParseText(
+	const FString& DescriptorText,
+	const FBMFontParserLimits& Limits)
+{
 	FBMFontParseResult Result;
 	Result.Data.DescriptorFormat = EBMFontDescriptorFormat::Text;
+	if (!ValidateLimits(Limits, Result)
+		|| !ValidateDescriptorCharacters(DescriptorText.Len(), Limits, Result)
+		|| !ValidateTextShape(DescriptorText, Limits, Result))
+	{
+		return Result;
+	}
 
 	FString Normalized = DescriptorText;
 	if (!Normalized.IsEmpty() && Normalized[0] == 0xFEFF)
@@ -851,6 +1414,9 @@ FBMFontParseResult FBMFontParser::ParseText(const FString& DescriptorText)
 	Normalized.ParseIntoArrayLines(Lines, false);
 	int32 ExpectedGlyphCount = INDEX_NONE;
 	int32 ExpectedKerningCount = INDEX_NONE;
+	int32 PageRecordCount = 0;
+	int32 GlyphRecordCount = 0;
+	int32 KerningRecordCount = 0;
 	TMap<uint64, int32> KerningIndices;
 
 	for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
@@ -881,22 +1447,51 @@ FBMFontParseResult FBMFontParser::ParseText(const FString& DescriptorText)
 		}
 		else if (Tag == TEXT("page"))
 		{
+			if (!ConsumeRecord(PageRecordCount, Limits.MaxPages, TEXT("page"), Result, LineIndex + 1))
+			{
+				break;
+			}
 			ParsePageAttributes(Attributes, Result, LineIndex + 1);
 		}
 		else if (Tag == TEXT("chars"))
 		{
-			ReadInt(Attributes, TEXT("count"), ExpectedGlyphCount, Result, TEXT("chars record"), LineIndex + 1, false);
+			if (ReadInt(Attributes, TEXT("count"), ExpectedGlyphCount, Result, TEXT("chars record"), LineIndex + 1, false))
+			{
+				ValidateDeclaredCount(ExpectedGlyphCount, Limits.MaxGlyphs, TEXT("glyph"), Result, LineIndex + 1);
+			}
 		}
 		else if (Tag == TEXT("char"))
 		{
+			if (!ConsumeRecord(GlyphRecordCount, Limits.MaxGlyphs, TEXT("glyph"), Result, LineIndex + 1))
+			{
+				break;
+			}
 			ParseGlyphAttributes(Attributes, Result, LineIndex + 1);
 		}
 		else if (Tag == TEXT("kernings"))
 		{
-			ReadInt(Attributes, TEXT("count"), ExpectedKerningCount, Result, TEXT("kernings record"), LineIndex + 1, false);
+			if (ReadInt(Attributes, TEXT("count"), ExpectedKerningCount, Result, TEXT("kernings record"), LineIndex + 1, false))
+			{
+				ValidateDeclaredCount(
+					ExpectedKerningCount,
+					Limits.MaxKerningPairs,
+					TEXT("kerning"),
+					Result,
+					LineIndex + 1
+				);
+			}
 		}
 		else if (Tag == TEXT("kerning"))
 		{
+			if (!ConsumeRecord(
+				KerningRecordCount,
+				Limits.MaxKerningPairs,
+				TEXT("kerning"),
+				Result,
+				LineIndex + 1))
+			{
+				break;
+			}
 			ParseKerningAttributes(Attributes, Result, KerningIndices, LineIndex + 1);
 		}
 		else
@@ -928,14 +1523,35 @@ FBMFontParseResult FBMFontParser::ParseText(const FString& DescriptorText)
 		);
 	}
 
-	ValidateData(Result);
+	ValidateData(Result, Limits);
 	return Result;
 }
 
 FBMFontParseResult FBMFontParser::ParseXml(const FString& DescriptorXml)
 {
+	return ParseXml(DescriptorXml, FBMFontParserLimits());
+}
+
+FBMFontParseResult FBMFontParser::ParseXml(
+	const FString& DescriptorXml,
+	const FBMFontParserLimits& Limits)
+{
 	FBMFontParseResult Result;
 	Result.Data.DescriptorFormat = EBMFontDescriptorFormat::Xml;
+	if (!ValidateLimits(Limits, Result)
+		|| !ValidateDescriptorCharacters(DescriptorXml.Len(), Limits, Result))
+	{
+		return Result;
+	}
+	if (DescriptorXml.Contains(TEXT("<!DOCTYPE"), ESearchCase::IgnoreCase))
+	{
+		AddError(Result, TEXT("BMFont XML descriptors must not contain a DOCTYPE declaration."));
+		return Result;
+	}
+	if (!ValidateXmlShape(DescriptorXml, Limits, Result))
+	{
+		return Result;
+	}
 
 	// FXmlFile removes an entire line when that line starts with an XML declaration.
 	// A valid compact BMFont document may place the declaration and root element on
@@ -986,10 +1602,15 @@ FBMFontParseResult FBMFontParser::ParseXml(const FString& DescriptorXml)
 
 	if (const FXmlNode* PagesNode = Root->FindChildNode(TEXT("pages")))
 	{
+		int32 PageRecordCount = 0;
 		for (const FXmlNode* PageNode : PagesNode->GetChildrenNodes())
 		{
 			if (PageNode != nullptr && PageNode->GetTag() == TEXT("page"))
 			{
+				if (!ConsumeRecord(PageRecordCount, Limits.MaxPages, TEXT("page"), Result))
+				{
+					break;
+				}
 				ParsePageAttributes(GetXmlAttributes(*PageNode), Result, INDEX_NONE);
 			}
 		}
@@ -999,11 +1620,19 @@ FBMFontParseResult FBMFontParser::ParseXml(const FString& DescriptorXml)
 	if (const FXmlNode* CharsNode = Root->FindChildNode(TEXT("chars")))
 	{
 		const FBMFontAttributes Attributes = GetXmlAttributes(*CharsNode);
-		ReadInt(Attributes, TEXT("count"), ExpectedGlyphCount, Result, TEXT("chars element"), INDEX_NONE, false);
+		if (ReadInt(Attributes, TEXT("count"), ExpectedGlyphCount, Result, TEXT("chars element"), INDEX_NONE, false))
+		{
+			ValidateDeclaredCount(ExpectedGlyphCount, Limits.MaxGlyphs, TEXT("glyph"), Result);
+		}
+		int32 GlyphRecordCount = 0;
 		for (const FXmlNode* CharNode : CharsNode->GetChildrenNodes())
 		{
 			if (CharNode != nullptr && CharNode->GetTag() == TEXT("char"))
 			{
+				if (!ConsumeRecord(GlyphRecordCount, Limits.MaxGlyphs, TEXT("glyph"), Result))
+				{
+					break;
+				}
 				ParseGlyphAttributes(GetXmlAttributes(*CharNode), Result, INDEX_NONE);
 			}
 		}
@@ -1014,11 +1643,28 @@ FBMFontParseResult FBMFontParser::ParseXml(const FString& DescriptorXml)
 	if (const FXmlNode* KerningsNode = Root->FindChildNode(TEXT("kernings")))
 	{
 		const FBMFontAttributes Attributes = GetXmlAttributes(*KerningsNode);
-		ReadInt(Attributes, TEXT("count"), ExpectedKerningCount, Result, TEXT("kernings element"), INDEX_NONE, false);
+		if (ReadInt(Attributes, TEXT("count"), ExpectedKerningCount, Result, TEXT("kernings element"), INDEX_NONE, false))
+		{
+			ValidateDeclaredCount(
+				ExpectedKerningCount,
+				Limits.MaxKerningPairs,
+				TEXT("kerning"),
+				Result
+			);
+		}
+		int32 KerningRecordCount = 0;
 		for (const FXmlNode* KerningNode : KerningsNode->GetChildrenNodes())
 		{
 			if (KerningNode != nullptr && KerningNode->GetTag() == TEXT("kerning"))
 			{
+				if (!ConsumeRecord(
+					KerningRecordCount,
+					Limits.MaxKerningPairs,
+					TEXT("kerning"),
+					Result))
+				{
+					break;
+				}
 				ParseKerningAttributes(GetXmlAttributes(*KerningNode), Result, KerningIndices, INDEX_NONE);
 			}
 		}
@@ -1033,14 +1679,25 @@ FBMFontParseResult FBMFontParser::ParseXml(const FString& DescriptorXml)
 		AddWarning(Result, TEXT("The XML kernings.count value does not match the number of parsed kerning pairs."));
 	}
 
-	ValidateData(Result);
+	ValidateData(Result, Limits);
 	return Result;
 }
 
 FBMFontParseResult FBMFontParser::ParseBinary(const TArrayView<const uint8> Bytes)
 {
+	return ParseBinary(Bytes, FBMFontParserLimits());
+}
+
+FBMFontParseResult FBMFontParser::ParseBinary(
+	const TArrayView<const uint8> Bytes,
+	const FBMFontParserLimits& Limits)
+{
 	FBMFontParseResult Result;
 	Result.Data.DescriptorFormat = EBMFontDescriptorFormat::Binary;
+	if (!ValidateLimits(Limits, Result) || !ValidateDescriptorBytes(Bytes.Num(), Limits, Result))
+	{
+		return Result;
+	}
 	if (Bytes.Num() < 4
 		|| Bytes[0] != static_cast<uint8>('B')
 		|| Bytes[1] != static_cast<uint8>('M')
@@ -1056,6 +1713,9 @@ FBMFontParseResult FBMFontParser::ParseBinary(const TArrayView<const uint8> Byte
 	}
 
 	TMap<uint64, int32> KerningIndices;
+	int32 PageRecordCount = 0;
+	int32 GlyphRecordCount = 0;
+	int32 KerningRecordCount = 0;
 	int32 Offset = 4;
 	while (Offset < Bytes.Num())
 	{
@@ -1087,13 +1747,13 @@ FBMFontParseResult FBMFontParser::ParseBinary(const TArrayView<const uint8> Byte
 			ParseBinaryCommon(Reader, Result);
 			break;
 		case 3:
-			ParseBinaryPages(Reader, Result);
+			ParseBinaryPages(Reader, Result, Limits, PageRecordCount);
 			break;
 		case 4:
-			ParseBinaryGlyphs(Reader, Result);
+			ParseBinaryGlyphs(Reader, Result, Limits, GlyphRecordCount);
 			break;
 		case 5:
-			ParseBinaryKernings(Reader, Result, KerningIndices);
+			ParseBinaryKernings(Reader, Result, KerningIndices, Limits, KerningRecordCount);
 			break;
 		default:
 			AddWarning(Result, FString::Printf(TEXT("Unknown binary BMFont block type %d was ignored."), BlockType));
@@ -1103,6 +1763,6 @@ FBMFontParseResult FBMFontParser::ParseBinary(const TArrayView<const uint8> Byte
 		Offset += static_cast<int32>(BlockSize);
 	}
 
-	ValidateData(Result);
+	ValidateData(Result, Limits);
 	return Result;
 }

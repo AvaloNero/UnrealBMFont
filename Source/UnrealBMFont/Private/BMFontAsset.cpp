@@ -90,9 +90,8 @@ UObject* UBMFontAsset::GetPageRenderResource(const int32 PageId, const int32 Gly
 		}
 	}
 
-	UMaterialInterface* BaseMaterial = PackedRenderMaterial.IsNull()
-		? LoadObject<UMaterialInterface>(nullptr, BMFontRendering::GetDefaultPackedMaterialPath())
-		: PackedRenderMaterial.LoadSynchronous();
+	EnsurePackedRenderMaterialLoaded(true);
+	UMaterialInterface* BaseMaterial = LoadedPackedRenderMaterial;
 	if (BaseMaterial == nullptr)
 	{
 		if (!bWarnedMissingPackedMaterial)
@@ -158,6 +157,7 @@ void UBMFontAsset::SetFontData(FBMFontData InFontData)
 	FontData = MoveTemp(InFontData);
 	EnsurePackedRenderMaterialReference();
 	ClearRenderResourceCache();
+	EnsurePackedRenderMaterialLoaded();
 	RebuildLookup();
 	++DataRevision;
 }
@@ -172,6 +172,7 @@ void UBMFontAsset::PostLoad()
 {
 	Super::PostLoad();
 	EnsurePackedRenderMaterialReference();
+	EnsurePackedRenderMaterialLoaded();
 	RebuildLookup();
 }
 
@@ -181,6 +182,7 @@ void UBMFontAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChanged
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 	EnsurePackedRenderMaterialReference();
 	ClearRenderResourceCache();
+	EnsurePackedRenderMaterialLoaded();
 	RebuildLookup();
 	++DataRevision;
 }
@@ -194,6 +196,31 @@ void UBMFontAsset::EnsurePackedRenderMaterialReference()
 			FSoftObjectPath(BMFontRendering::GetDefaultPackedMaterialPath())
 		);
 	}
+}
+
+void UBMFontAsset::EnsurePackedRenderMaterialLoaded(const bool bAllowRenderRetry)
+{
+	if (!FontData.Common.bPacked || LoadedPackedRenderMaterial != nullptr)
+	{
+		return;
+	}
+
+	EnsurePackedRenderMaterialReference();
+	if (UMaterialInterface* ResolvedMaterial = PackedRenderMaterial.Get())
+	{
+		LoadedPackedRenderMaterial = ResolvedMaterial;
+		return;
+	}
+
+	if (bPackedMaterialLoadAttempted
+		&& (!bAllowRenderRetry || bPackedMaterialRenderRetryAttempted))
+	{
+		return;
+	}
+
+	bPackedMaterialLoadAttempted = true;
+	bPackedMaterialRenderRetryAttempted |= bAllowRenderRetry;
+	LoadedPackedRenderMaterial = PackedRenderMaterial.LoadSynchronous();
 }
 
 void UBMFontAsset::RebuildLookup()
@@ -210,5 +237,8 @@ void UBMFontAsset::ClearRenderResourceCache()
 {
 	PageMaterialCache.Reset();
 	PageMaterialSources.Reset();
+	LoadedPackedRenderMaterial = nullptr;
+	bPackedMaterialLoadAttempted = false;
+	bPackedMaterialRenderRetryAttempted = false;
 	bWarnedMissingPackedMaterial = false;
 }

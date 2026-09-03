@@ -4,15 +4,24 @@
 
 FBox2D FBMFontGlyph::GetUvRegion(const FBMFontCommon& Common) const
 {
-	if (Common.ScaleWidth <= 0 || Common.ScaleHeight <= 0)
+	const int64 Right = static_cast<int64>(X) + static_cast<int64>(Width);
+	const int64 Bottom = static_cast<int64>(Y) + static_cast<int64>(Height);
+	if (Common.ScaleWidth <= 0
+		|| Common.ScaleHeight <= 0
+		|| X < 0
+		|| Y < 0
+		|| Width < 0
+		|| Height < 0
+		|| Right > Common.ScaleWidth
+		|| Bottom > Common.ScaleHeight)
 	{
-		return FBox2D(EForceInit::ForceInit);
+		return FBox2D(FVector2D::ZeroVector, FVector2D::ZeroVector);
 	}
 
-	const FVector2D AtlasSize(Common.ScaleWidth, Common.ScaleHeight);
+	const FVector2D AtlasSize(static_cast<double>(Common.ScaleWidth), static_cast<double>(Common.ScaleHeight));
 	return FBox2D(
-		FVector2D(X, Y) / AtlasSize,
-		FVector2D(X + Width, Y + Height) / AtlasSize
+		FVector2D(static_cast<double>(X), static_cast<double>(Y)) / AtlasSize,
+		FVector2D(static_cast<double>(Right), static_cast<double>(Bottom)) / AtlasSize
 	);
 }
 

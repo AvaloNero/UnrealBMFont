@@ -5,6 +5,7 @@ Intermediate/
 Saved/
 
 # Local verification and packages
+.codegraph/
 .build/
 Artifacts/
 

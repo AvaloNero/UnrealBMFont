@@ -47,9 +47,9 @@ Layout decodes Unicode scalar values, resolves fallback glyphs, applies pair ker
 
 ## Rendering model
 
-`SBMFontText` is an `SLeafWidget`. It keeps a revision-aware brush cache and emits Slate boxes using the correct page texture and UV region. All glyphs on the same texture/layer remain eligible for Slate batching. Layout is cached by text, font data revision, settings, and resolved wrapping width.
+`SBMFontText` is an `SLeafWidget`. Layout is cached by text, font data revision, settings, and resolved wrapping width. Its brush cache is keyed by layout revision and contains only the distinct glyphs used by that layout, so changing a short string in a large CJK asset does not rebuild brushes for the entire font. `OnPaint` still performs a constant-time revision check before using the cache. All glyphs on the same texture/layer remain eligible for Slate batching.
 
-Packed-channel glyphs render through `UMaterialInstanceDynamic` resources created from the asset's packed render material (default: the plugin's `M_BMFontPacked`). The asset caches them by page ID and glyph channel mask. Each instance receives the page texture and channel mapping computed from `char.chnl` plus the common channel metadata, while Slate's vertex color continues to apply tint and shadow. Non-packed pages keep the plain texture path.
+Packed-channel glyphs render through `UMaterialInstanceDynamic` resources created from the asset's packed render material (default: the plugin's `M_BMFontPacked`). The base material is resolved when packed data is assigned, loaded, or edited rather than during the normal first paint. If that lifecycle load is temporarily unavailable, the first render-resource request retries once; later requests can also adopt the same soft object if another system loads it. Failed attempts remain bounded so a missing material cannot trigger synchronous loading once per glyph or paint. The asset caches material instances by page ID and glyph channel mask. Each instance receives the page texture and channel mapping computed from `char.chnl` plus the common channel metadata, while Slate's vertex color continues to apply tint and shadow. Non-packed pages keep the plain texture path.
 
 ## Text model
 

@@ -150,6 +150,7 @@ try {
 	New-Item -ItemType Directory -Path $stagedPluginRoot -Force | Out-Null
 	$excludedDirectories = @(
 		'.git',
+		'.codegraph',
 		'.build',
 		'Artifacts',
 		'Binaries',
@@ -193,6 +194,7 @@ try {
 		"-Plugin=$stagedPlugin" `
 		"-Package=$internalPackageDirectory" `
 		"-TargetPlatforms=$platformArgument" `
+		-WaitForUATMutex `
 		-Rocket
 
 	if ($LASTEXITCODE -ne 0) {
@@ -242,13 +244,35 @@ try {
 		'README.md',
 		'README.zh-CN.md',
 		'CHANGELOG.md',
+		'CODE_OF_CONDUCT.md',
+		'CONTRIBUTING.md',
+		'ROADMAP.md',
+		'SECURITY.md',
+		'SUPPORT.md',
+		'Docs\Architecture.md',
 		'Docs\Compatibility.md',
-		'Docs\FormatSupport.md'
+		'Docs\FormatSupport.md',
+		'Docs\ReleaseChecklist.md',
+		'Docs\RichText.md',
+		'Docs\Testing.md',
+		'Docs\Images\showcase-runtime.png',
+		'Samples\Minimal\Minimal.fnt',
+		'Samples\Minimal\Minimal.png',
+		'Samples\Packed\Packed.fnt',
+		'Samples\Packed\Packed.png',
+		'Samples\Showcase\Showcase.fnt',
+		'Samples\Showcase\Showcase.png'
 	)
 	foreach ($relativePath in $requiredPackageFiles) {
 		$requiredPath = Join-Path $internalPackageDirectory $relativePath
 		if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
 			throw "Required release file is missing from the package: $relativePath"
+		}
+	}
+	foreach ($forbiddenEntry in @('Scripts', '.build', '.codegraph', 'Artifacts')) {
+		$forbiddenPath = Join-Path $internalPackageDirectory $forbiddenEntry
+		if (Test-Path -LiteralPath $forbiddenPath) {
+			throw "Repository-only entry leaked into the release package: $forbiddenEntry"
 		}
 	}
 

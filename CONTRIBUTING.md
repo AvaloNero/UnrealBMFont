@@ -42,6 +42,16 @@ pwsh ./Scripts/TestPlugin.ps1 `
 
 Add or update automation coverage for parser, layout, importer, or rendering behavior. Tests must guard lookups before dereferencing so a regression reports a failure instead of crashing the editor.
 
+For changes that can affect game targets, cooked content, or module startup, validate the audited plugin package in real Development and Shipping hosts:
+
+```powershell
+pwsh ./Scripts/TestPackagedRuntime.ps1 `
+  -EngineRoot "C:\Program Files\Epic Games\UE_5.8" `
+  -PluginPackage "$env:TEMP\UnrealBMFont-Package"
+```
+
+This step is intentionally heavier than Editor automation. Keep the generated host and evidence outside the repository, and do not replace it with a source scan or editor-only launch when making packaged-runtime claims.
+
 ## Pull request checklist
 
 - The change has a focused rationale and no unrelated generated files.

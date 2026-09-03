@@ -6,7 +6,7 @@
 
 Unreal BMFont 用于导入 AngelCode BMFont 描述文件，并在 Slate / UMG 中渲染位图字形。核心控件是为 BMFont 专门设计的普通文本控件，可以把它理解为 `UTextBlock` 的位图字体版本，并使用精简的专用布局与渲染管线。
 
-插件当前版本为 Beta `0.2.0`。Runtime API 已保持精简可用，但不会宣称支持尚未验证的引擎版本和平台。
+插件当前版本为 Beta `0.3.0`。Runtime API 已保持精简可用，但不会宣称支持尚未验证的引擎版本和平台。
 
 [English](README.md) · [格式支持](Docs/FormatSupport.md) · [架构](Docs/Architecture.md) · [测试](Docs/Testing.md)
 
@@ -24,7 +24,8 @@ Unreal BMFont 用于导入 AngelCode BMFont 描述文件，并在 Slate / UMG �
 - 支持资产重导入，并保留用户自行修改的纹理过滤方式。
 - 提供编辑器缩略图和带字形框的只读字体/图集检查器。
 - Runtime、Editor/Importer 与自动化测试模块彼此隔离。
-- 对错误描述文件、越界图集、危险页面路径和纹理尺寸不匹配给出明确日志。
+- 用可配置资源上限约束错误或超大描述文件、危险页面路径、越界图集及多页图集声明，并给出明确日志。
+- 普通文本控件只为当前布局实际使用的字形创建画刷，大型 Unicode 字体资产也不会按整张字形表预建缓存。
 
 ## 环境要求
 
@@ -72,12 +73,20 @@ BMFont 保存的是已经栅格化的字形矩形，不是字体塑形系统。�
 python ./Scripts/ValidateRepository.py
 ```
 
-自动化用例覆盖描述解析、Unicode 码点、kerning、换行、行高、真实 PNG 导入、纹理默认值和重导入。可以对装有插件的任意宿主项目运行：
+自动化用例覆盖有界描述解析、固定畸形输入语料、Unicode 码点、kerning、换行、行高、大字形集缓存、真实 PNG 导入、纹理默认值、重导入和 GPU 渲染。可以对装有插件的任意宿主项目运行：
 
 ```powershell
 pwsh ./Scripts/TestPlugin.ps1 `
   -EngineRoot "C:\Program Files\Epic Games\UE_5.8" `
   -Project "D:\Projects\BMFontHost\BMFontHost.uproject"
+```
+
+用 `BuildPlugin.ps1` 生成插件包后，可以继续验证真实的 Development / Shipping Cook、打包和启动：
+
+```powershell
+pwsh ./Scripts/TestPackagedRuntime.ps1 `
+  -EngineRoot "C:\Program Files\Epic Games\UE_5.8" `
+  -PluginPackage "$env:TEMP\UnrealBMFont-Package"
 ```
 
 提交改动前请阅读[贡献指南](CONTRIBUTING.md)。

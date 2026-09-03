@@ -17,10 +17,34 @@
 
 - The descriptor must have positive line height and atlas dimensions.
 - The declared page count must match parsed page records.
+- Page IDs must be non-negative but do not need to be contiguous; the page resource limit applies to the number of page records, not their numeric IDs.
 - Every glyph must reference a known page and remain inside the declared atlas.
 - Every page file must exist beneath the descriptor directory. Absolute paths and `..` traversal cannot escape that directory.
 - Imported source texture dimensions must match `scaleW` and `scaleH`.
 - Duplicate glyphs and kerning pairs use the last value and emit a warning.
+- XML descriptors containing a `DOCTYPE` declaration are rejected before XML parsing.
+
+## Parser resource limits
+
+The importer applies `FBMFontParserLimits` before and while reading descriptor data. C++ callers can pass an explicit limits object to `Parse`, `ParseText`, `ParseXml`, or `ParseBinary`; the one-argument overloads and editor importer use these defaults:
+
+| Resource | Default limit |
+| --- | ---: |
+| Descriptor bytes | 64 MiB |
+| Decoded descriptor characters | 64 Mi characters |
+| Text lines | 2,250,000 |
+| Characters in one text line | 65,536 |
+| XML elements | 1,200,000 |
+| XML attributes | 5,000,000 |
+| Atlas page records | 256 |
+| Glyph records | 1,112,064 (the number of Unicode scalar values) |
+| Kerning records | 1,000,000 |
+| Page file-name characters | 1,024 |
+| Width or height of one atlas page | 16,384 pixels |
+| Pixels in one atlas page | 67,108,864 |
+| Pixels across all declared pages | 268,435,456 |
+
+XML element and attribute limits are checked with a lightweight scan before Unreal materializes the XML DOM. Raw record counts are limited even when duplicate records later collapse into one map entry. Parser diagnostics are capped at 256 entries; the final entry reports suppression, remains a warning for warning-only input, and is promoted to an error if any suppressed diagnostic is an error. These limits bound parser-side work and declared texture scale. Unreal's texture decoder remains responsible for decoding the referenced image format.
 
 ## Image formats
 

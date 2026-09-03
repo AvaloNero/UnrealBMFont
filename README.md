@@ -6,7 +6,7 @@
 
 Unreal BMFont imports AngelCode BMFont descriptors and renders their bitmap glyphs in Slate and UMG. The core widget is a purpose-built plain-text bitmap-font counterpart to `UTextBlock`, with a compact layout and rendering pipeline tailored to BMFont assets.
 
-The plugin is currently beta (`0.2.0`). Its runtime API is small and usable, but compatibility beyond the verified matrix is not claimed yet.
+The plugin is currently beta (`0.3.0`). Its runtime API is small and usable, but compatibility beyond the verified matrix is not claimed yet.
 
 [简体中文](README.zh-CN.md) · [Format support](Docs/FormatSupport.md) · [Architecture](Docs/Architecture.md) · [Testing](Docs/Testing.md)
 
@@ -24,7 +24,8 @@ The plugin is currently beta (`0.2.0`). Its runtime API is small and usable, but
 - Supports asset reimport while preserving user-edited texture filtering.
 - Ships editor thumbnails and a read-only font/atlas inspector with glyph rectangles.
 - Keeps runtime, editor/importer, and automation-test modules separate.
-- Validates malformed descriptors, unsafe page paths, atlas bounds, and atlas dimensions with actionable logs.
+- Applies configurable resource limits to malformed or oversized descriptors, unsafe page paths, atlas bounds, and multi-page atlas declarations with actionable logs.
+- Keeps plain-widget brush creation proportional to glyphs used by the current layout, including on large Unicode assets.
 
 ## Requirements
 
@@ -72,12 +73,20 @@ Run the dependency-free repository hygiene checks first:
 python ./Scripts/ValidateRepository.py
 ```
 
-The automated suite exercises descriptor parsing, Unicode scalar handling, kerning, wrapping, line metrics, real PNG import, texture defaults, and reimport. Run it against any host project containing the packaged plugin:
+The automated suite exercises bounded descriptor parsing, deterministic malformed-input corpora, Unicode scalar handling, kerning, wrapping, line metrics, large-glyph-set caching, real PNG import, texture defaults, reimport, and GPU rendering. Run it against any host project containing the packaged plugin:
 
 ```powershell
 pwsh ./Scripts/TestPlugin.ps1 `
   -EngineRoot "C:\Program Files\Epic Games\UE_5.8" `
   -Project "D:\Projects\BMFontHost\BMFontHost.uproject"
+```
+
+After producing a package with `BuildPlugin.ps1`, verify real Development and Shipping cooks and launches with:
+
+```powershell
+pwsh ./Scripts/TestPackagedRuntime.ps1 `
+  -EngineRoot "C:\Program Files\Epic Games\UE_5.8" `
+  -PluginPackage "$env:TEMP\UnrealBMFont-Package"
 ```
 
 See [Contributing](CONTRIBUTING.md) for the complete workflow.

@@ -8,11 +8,14 @@ The `UnrealBMFont.*` suite covers:
 - Compact XML descriptors with the declaration and document on one line.
 - Generated binary v3 blocks, signed offsets, and kerning.
 - Invalid metrics and atlas validation.
+- Configurable descriptor, text/XML shape, record, page-name, atlas-dimension, and total multi-page pixel limits.
+- Truncated binary prefixes, impossible block sizes, fixed-seed malformed byte corpora, diagnostic flooding, and XML `DOCTYPE` rejection.
 - Kerning, tracking, glyph offsets, wrapping, explicit lines, tabs, fallback, missing glyphs, and line-height semantics.
 - A real generated PNG plus `.fnt` import through `UBMFontFactory`.
 - The packaged multilingual Showcase fixture, including representative Latin, Hiragana, Chinese, and fallback code points.
 - UI texture defaults, source path tracking, transactional multi-page reimport/rollback, and preservation of user-edited texture filtering.
 - Slate desired-size calculation and invalidation after text changes.
+- Layout-scoped brush creation against a generated 20,000-glyph asset.
 - Rich text run measurement through `UBMFontRichTextBlock`, including kerning, fallback, tagged and empty runs, runtime font assignment, inherited foreground colors, shadow bounds, and screenshot coverage for parent-clipped ellipsis painting.
 - Packed-channel mapping, packed import/reimport through `UBMFontFactory`, packaged material dependency on real save, and render-resource separation by page and glyph channel.
 
@@ -63,11 +66,23 @@ pwsh ./Scripts/BuildPlugin.ps1 `
 
 The wrapper first creates a clean source staging copy outside the repository, excluding local engine trees, build products, reports, and previous packages. Its internal host and package live under a shared neutral build root (override with `-BuildRoot`), so compiler paths do not expose a developer profile or source checkout. This matters because UE 5.8's `BuildPlugin` command copies the complete input plugin to its temporary host before applying `FilterPlugin.ini`.
 
+Both release scripts wait for an already-running AutomationTool process instead of failing the release when another Unreal build temporarily owns the engine-wide UAT mutex.
+
 Before copying to `OutputDirectory`, the wrapper verifies that the packaged descriptor is both installed and opt-in, checks the required license/readme/compatibility files, strips PDBs by default, and scans every packaged file for the user-profile and source-checkout paths. Raw `BuildPlugin` removes `EnabledByDefault`; publishing that uncorrected descriptor from a project-local package can prevent a content-only project from generating a plugin-aware game target.
 
 Do not describe a static source scan as a successful runtime test. A release checklist should retain the BuildPlugin log, automation `index.json`, cook log, and packaged runtime evidence.
 
-For a packaged runtime smoke test, launch a Development build with logging enabled and verify `LogUnrealBMFont: Unreal BMFont runtime module initialized.` appears before exit.
+## Packaged runtime verification
+
+After `BuildPlugin.ps1` succeeds, run:
+
+```powershell
+pwsh ./Scripts/TestPackagedRuntime.ps1 `
+  -EngineRoot "C:\Program Files\Epic Games\UE_5.8" `
+  -PluginPackage "$env:TEMP\UnrealBMFont-Package"
+```
+
+The script generates a clean C++ RuntimeHost in a unique temporary work directory outside the repository, copies only the audited BuildPlugin package, then builds, cooks, packages, and launches Development and Shipping configurations. Each launch writes a deterministic marker proving that `UBMFontText` was instantiated and `/UnrealBMFont/M_BMFontPacked` loaded from cooked content. An explicit `-WorkDirectory` is accepted only when the path does not already exist, preventing stale markers or archives from satisfying a new run; retain the generated `Evidence` directory with release records.
 
 ## GitHub Actions
 
@@ -77,3 +92,5 @@ To enable the Unreal job, register a Windows x64 self-hosted runner with the `ue
 
 - `UE_CI_ENABLED=true`
 - `UE_ROOT` to the Unreal Engine 5.8 installation or source-tree root on that runner
+
+Set `UE_GPU_CI_ENABLED=true` only when that runner has a usable GPU and reference-compatible driver. The Unreal job always runs BuildPlugin, NullRHI automation, and Development/Shipping packaged-runtime verification; the GPU variable adds `UnrealBMFont.Render.*` screenshot comparison.

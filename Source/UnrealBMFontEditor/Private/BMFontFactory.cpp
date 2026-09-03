@@ -8,6 +8,7 @@
 #include "EditorFramework/AssetImportData.h"
 #include "Engine/Texture2D.h"
 #include "Factories/TextureFactory.h"
+#include "HAL/FileManager.h"
 #include "ImageUtils.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -385,6 +386,26 @@ UBMFontAsset* UBMFontFactory::ImportFromFile(
 	FFeedbackContext* Warn,
 	bool& bOutOperationCanceled) const
 {
+	const FBMFontParserLimits ParserLimits;
+	const int64 DescriptorSize = IFileManager::Get().FileSize(*Filename);
+	if (DescriptorSize < 0)
+	{
+		UE_LOG(LogUnrealBMFont, Error, TEXT("Failed to inspect BMFont descriptor: %s"), *Filename);
+		return nullptr;
+	}
+	if (DescriptorSize > ParserLimits.MaxDescriptorBytes)
+	{
+		UE_LOG(
+			LogUnrealBMFont,
+			Error,
+			TEXT("BMFont descriptor is %lld byte(s), exceeding the configured %lld-byte limit: %s"),
+			DescriptorSize,
+			ParserLimits.MaxDescriptorBytes,
+			*Filename
+		);
+		return nullptr;
+	}
+
 	TArray<uint8> DescriptorBytes;
 	if (!FFileHelper::LoadFileToArray(DescriptorBytes, *Filename))
 	{
@@ -392,7 +413,7 @@ UBMFontAsset* UBMFontFactory::ImportFromFile(
 		return nullptr;
 	}
 
-	FBMFontParseResult ParseResult = FBMFontParser::Parse(DescriptorBytes);
+	FBMFontParseResult ParseResult = FBMFontParser::Parse(DescriptorBytes, ParserLimits);
 	ReportParseMessages(ParseResult);
 	if (!ParseResult.IsSuccess())
 	{

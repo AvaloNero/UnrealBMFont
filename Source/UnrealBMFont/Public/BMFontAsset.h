@@ -77,6 +77,7 @@ private:
 	void RebuildLookup();
 	void ClearRenderResourceCache();
 	void EnsurePackedRenderMaterialReference();
+	void EnsurePackedRenderMaterialLoaded(bool bAllowRenderRetry = false);
 
 	TMap<uint64, int32> KerningLookup;
 	uint32 DataRevision = 1;
@@ -84,6 +85,11 @@ private:
 	UPROPERTY(Transient)
 	TMap<uint64, TObjectPtr<UMaterialInstanceDynamic>> PageMaterialCache;
 
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> LoadedPackedRenderMaterial = nullptr;
+
 	TMap<uint64, TWeakObjectPtr<UTexture2D>> PageMaterialSources;
+	bool bPackedMaterialLoadAttempted = false;
+	bool bPackedMaterialRenderRetryAttempted = false;
 	bool bWarnedMissingPackedMaterial = false;
 };

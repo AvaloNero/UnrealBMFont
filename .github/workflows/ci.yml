@@ -21,6 +21,8 @@ jobs:
     name: UE 5.8 / Win64
     if: ${{ vars.UE_CI_ENABLED == 'true' }}
     runs-on: [self-hosted, windows, x64, ue-5.8]
+    env:
+      UE_SKIP_UBT_SDK_SETUP: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Require configured engine root
@@ -34,18 +36,18 @@ jobs:
         run: >-
           ./Scripts/BuildPlugin.ps1
           -EngineRoot '${{ vars.UE_ROOT }}'
-          -OutputDirectory '${{ runner.temp }}\UnrealBMFont-Package'
+          -OutputDirectory '${{ runner.temp }}\UnrealBMFont-Package-${{ github.run_id }}-${{ github.run_attempt }}'
           -TargetPlatforms Win64
       - name: Create automation host
         shell: pwsh
         run: |
-          $hostRoot = '${{ runner.temp }}\UnrealBMFont-Host'
+          $hostRoot = '${{ runner.temp }}\UnrealBMFont-Host-${{ github.run_id }}-${{ github.run_attempt }}'
           if (Test-Path -LiteralPath $hostRoot) {
             throw "Automation host already exists; refusing stale state: $hostRoot"
           }
           New-Item -ItemType Directory -Path "$hostRoot\Plugins" -Force | Out-Null
           New-Item -ItemType Directory -Path "$hostRoot\Content" -Force | Out-Null
-          Copy-Item -LiteralPath '${{ runner.temp }}\UnrealBMFont-Package' -Destination "$hostRoot\Plugins\UnrealBMFont" -Recurse
+          Copy-Item -LiteralPath '${{ runner.temp }}\UnrealBMFont-Package-${{ github.run_id }}-${{ github.run_attempt }}' -Destination "$hostRoot\Plugins\UnrealBMFont" -Recurse
           @'
           {
             "FileVersion": 3,
@@ -60,15 +62,31 @@ jobs:
         run: >-
           ./Scripts/TestPlugin.ps1
           -EngineRoot '${{ vars.UE_ROOT }}'
-          -Project '${{ runner.temp }}\UnrealBMFont-Host\UnrealBMFontHost.uproject'
-          -ReportDirectory '${{ runner.temp }}\UnrealBMFont-Reports'
-      # The UnrealBMFont.Render.* screenshot tests need a GPU; on a GPU runner add
-      #   -DisableNullRHI -TestFilter 'UnrealBMFont.Render'
-      # as a second TestPlugin.ps1 invocation. They self-skip under NullRHI.
+          -Project '${{ runner.temp }}\UnrealBMFont-Host-${{ github.run_id }}-${{ github.run_attempt }}\UnrealBMFontHost.uproject'
+          -ReportDirectory '${{ runner.temp }}\UnrealBMFont-Reports-${{ github.run_id }}-${{ github.run_attempt }}'
+      - name: Run GPU screenshot automation
+        if: ${{ vars.UE_GPU_CI_ENABLED == 'true' }}
+        shell: pwsh
+        run: >-
+          ./Scripts/TestPlugin.ps1
+          -EngineRoot '${{ vars.UE_ROOT }}'
+          -Project '${{ runner.temp }}\UnrealBMFont-Host-${{ github.run_id }}-${{ github.run_attempt }}\UnrealBMFontHost.uproject'
+          -ReportDirectory '${{ runner.temp }}\UnrealBMFont-GPU-Reports-${{ github.run_id }}-${{ github.run_attempt }}'
+          -DisableNullRHI
+          -TestFilter 'UnrealBMFont.Render'
+      - name: Cook, package, and launch runtime hosts
+        shell: pwsh
+        run: >-
+          ./Scripts/TestPackagedRuntime.ps1
+          -EngineRoot '${{ vars.UE_ROOT }}'
+          -PluginPackage '${{ runner.temp }}\UnrealBMFont-Package-${{ github.run_id }}-${{ github.run_attempt }}'
+          -WorkDirectory '${{ runner.temp }}\UnrealBMFont-RuntimeSmoke-${{ github.run_id }}-${{ github.run_attempt }}'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: UnrealBMFont-Win64
           path: |
-            ${{ runner.temp }}\UnrealBMFont-Package
-            ${{ runner.temp }}\UnrealBMFont-Reports
+            ${{ runner.temp }}\UnrealBMFont-Package-${{ github.run_id }}-${{ github.run_attempt }}
+            ${{ runner.temp }}\UnrealBMFont-Reports-${{ github.run_id }}-${{ github.run_attempt }}
+            ${{ runner.temp }}\UnrealBMFont-GPU-Reports-${{ github.run_id }}-${{ github.run_attempt }}
+            ${{ runner.temp }}\UnrealBMFont-RuntimeSmoke-${{ github.run_id }}-${{ github.run_attempt }}\Evidence
